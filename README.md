@@ -19,7 +19,7 @@ pip install matplotlib seaborn
 
 ---
 
-## Phase 1 — Data and baseline DPO
+## Phase 1 — Data, tokenization, baseline DPO
 
 **1. Ground truth (HH-RLHF subsample + random A/B)**  
 Load Anthropic/hh-rlhf, shuffle each official split with fixed seeds, then keep up to **10,000** train rows from `split="train"` and **2,000** test rows from `split="test"` (fewer if the split is shorter). Each row gets a reproducible random `truth_is_A` draw.
@@ -41,36 +41,63 @@ python simulate_crowd.py
 
 Outputs: `data/processed/02_train_noisy_votes.csv`, `data/true_params/03_true_params.csv`
 
-**3. Tokenize for GPT-2**
+**3a. Tokenize noisy train + test (for crowd / EM training)**  
+Expands each vote row into token tensors for DPO training on noisy labels.
 
 ```bash
 cd src/data
 python tokenize_data.py
 ```
 
-Outputs: `data/tokenized/train_tokens.pt`, `data/tokenized/test_tokens.pt`
+Outputs: `data/tokenized/noisy_train_tokens.pt`, `data/tokenized/test_tokens.pt`
 
-**4. Baseline DPO (trusts raw votes)**  
-Trains with **one loss term per vote row**: if the vote is B, A and B are swapped for that row’s DPO term (not majority-vote aggregation over workers). You can use **GPT-2** or a small **dummy** causal LM; edit `if __name__ == "__main__"` in `train_baseline_dpo.py` (`use_sft=True` for GPT-2, `False` for dummy; adjust `epochs` as needed).
+**3b. Tokenize oracle train (ceiling / upper bound)**  
+Builds one training example per prompt using **`truth_is_A` as the vote** (always agrees with the simulator’s hidden label). Use this with **baseline DPO** and `is_oracle=True` to estimate how high test accuracy can get under the same model and objective, without crowd noise.
+
+```bash
+cd src/data
+python tokenize_oracle.py
+```
+
+Outputs: `data/tokenized/oracle_train_tokens.pt`  
+Requires: step **1** only (no noisy votes file needed).
+
+**4. Baseline DPO**  
+`train_baseline_dpo.py` loads either **`noisy_train_tokens.pt`** (real crowd) or **`oracle_train_tokens.pt`** (ground-truth preferences). Training uses **one DPO term per row**; if `vote == 0`, A and B are swapped for that row.
+
+Edit `if __name__ == "__main__"` to choose:
+
+- **`use_sft`**: `True` = GPT-2, `False` = small dummy LM  
+- **`is_oracle`**: `False` = noisy crowd (`noisy_train_tokens.pt`), `True` = oracle ceiling (`oracle_train_tokens.pt`)  
+- **`epochs`**: as needed  
 
 ```bash
 cd src/training
 python train_baseline_dpo.py
 ```
 
-Outputs: `results/baseline_sft_metrics.csv` or `results/baseline_dummy_metrics.csv`, `models/baseline_gpt2.pth` or `models/baseline_dummy.pth`
+Outputs (pattern):
+
+| Setting | Metrics CSV | Weights |
+|--------|-------------|---------|
+| Noisy + dummy | `results/baseline_dummy_metrics.csv` | `models/baseline_dummy.pth` |
+| Noisy + GPT-2 | `results/baseline_gpt2_metrics.csv` | `models/baseline_gpt2.pth` |
+| Oracle + dummy | `results/oracle_dummy_metrics.csv` | `models/oracle_dummy.pth` |
+| Oracle + GPT-2 | `results/oracle_gpt2_metrics.csv` | `models/oracle_gpt2.pth` |
+
+Compare **oracle** vs **baseline** test accuracy to see how much performance is left on the table after accounting for noise and limited training.
 
 **5. Plots**  
-Use the CSV columns (`epoch`, `train_loss`, `test_accuracy`) in your notebook or tool of choice to compare loss and golden accuracy across epochs.
+Use CSV columns `epoch`, `train_loss`, `test_accuracy` to compare runs.
 
 ---
 
 ## Phase 2 — EM and projected DPO
 
-Steps **1–3** are the same as above.
+Steps **1**, **2**, and **3a** (noisy tokenization) are required. Oracle tokenization is optional here.
 
 **4a. Standalone EM (offline weights)**  
-Runs Dawid–Skene–style EM on `02_train_noisy_votes.csv` and writes trust weights for use by projected DPO when **not** using the joint loop.
+Runs EM on `02_train_noisy_votes.csv` and writes trust weights for **static** projected DPO.
 
 ```bash
 cd src/models
@@ -80,27 +107,34 @@ python em_standalone.py
 Outputs: `results/standalone_tracking/em_params_iter_*.csv`, `results/04_em_weights.csv`, `results/05_em_inferred_params.csv`, `results/em_loss_history.csv`
 
 **4b. Projected DPO**  
-Soft-label DPO using EM’s \(\gamma\) (trust weights). Two modes (see `if __name__ == "__main__"` in `train_projected_dpo.py`):
+Loads **`noisy_train_tokens.pt`** and `02_train_noisy_votes.csv`. Soft-label DPO with EM’s \(\gamma\) (trust weights). Edit `if __name__ == "__main__"` in `train_projected_dpo.py`:
 
-- **`use_joint_em=True`**: each epoch recomputes LLM priors from the current policy, runs EM (E-step + M-step), then trains with updated weights (no prior `04_em_weights.csv` required).
-- **`use_joint_em=False`**: uses frozen **`results/04_em_weights.csv`** from **4a** — run `em_standalone.py` first.
+- **`use_joint_em=True`**: each epoch recomputes LLM priors, runs EM, then trains (no prior `04_em_weights.csv` needed).  
+- **`use_joint_em=False`**: static weights from **`results/04_em_weights.csv`** — run **4a** first.  
+- **`use_sft`**: GPT-2 vs dummy.
 
 ```bash
 cd src/training
 python train_projected_dpo.py
 ```
 
-Outputs: `results/joint_tracking/` (when joint EM is on), `models/projected_dpo_model.pth`, `results/projected_metrics.csv`
+Outputs (pattern):
 
-**5. Animate EM parameter evolution**
+- Metrics: `results/projected_{gpt2|dummy}_{joint|static}_metrics.csv`  
+- Weights: `models/projected_{gpt2|dummy}_{joint|static}.pth`  
+- Joint EM only: `results/05_em_inferred_params_joint_{gpt2|dummy}.csv`, `results/04_em_weights_joint_{gpt2|dummy}.csv`  
+- Per-epoch EM traces (joint or static): `results/{joint|static}_tracking_{gpt2|dummy}/em_params_epoch_*.csv`
+
+**5. Animate EM parameter evolution**  
+`ult_animate_clusters.py --mode standalone` expects `../../results/standalone_tracking/` (from `em_standalone.py`). For projected runs, pass the tracking directory explicitly, for example:
 
 ```bash
 cd src/notebooks
-python ult_animate_clusters.py --mode standalone
-python ult_animate_clusters.py --mode joint
+python ult_animate_clusters.py --path ../../results/joint_tracking_dummy/
+python ult_animate_clusters.py --path ../../results/static_tracking_gpt2/
 ```
 
-For stress-test edge cases, pass the tracking folder (paths relative to `src/notebooks`):
+For stress-test edge cases:
 
 ```bash
 python ult_animate_clusters.py --path ../../results/edge_cases/isolated_sparsity_failure_tracking/

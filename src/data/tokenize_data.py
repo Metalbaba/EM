@@ -48,12 +48,12 @@ def run_tokenization():
     os.makedirs("../../data/tokenized", exist_ok=True)
     
     train_tensors = tokenize_csv(train_text, train_votes, tokenizer)
-    torch.save(train_tensors, "../../data/tokenized/train_tokens.pt")
-    
+    torch.save(train_tensors, "../../data/tokenized/noisy_train_tokens.pt")
+
     test_tensors = tokenize_csv(test_text, None, tokenizer)
     torch.save(test_tensors, "../../data/tokenized/test_tokens.pt")
-    
-    print("Saved train_tokens.pt and test_tokens.pt successfully!")
+
+    print("Saved noisy_train_tokens.pt and test_tokens.pt successfully!")
 
 if __name__ == "__main__":
     run_tokenization()

@@ -1,0 +1,746 @@
+% ============================================================
+%  Expectation Maximisers — Report Sketch
+%  Fill in every \todo{} block before submission.
+% ============================================================
+\documentclass[11pt, a4paper]{article}
+
+% ── Packages ────────────────────────────────────────────────
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{parskip}        % space between paragraphs, no indent
+% microtype omitted for compatibility
+\usepackage{caption}
+\usepackage{float}
+
+% ── Colours ─────────────────────────────────────────────────
+\definecolor{todocolor}{RGB}{192, 57, 43}
+\definecolor{warncolor}{RGB}{180, 95, 6}
+\definecolor{codeblue}{RGB}{31, 56, 100}
+\definecolor{codegray}{RGB}{245, 245, 245}
+
+% ── TODO / CAUTION commands ──────────────────────────────────
+\newcommand{\todo}[1]{%
+  \textcolor{todocolor}{\textbf{[TODO:} \textit{#1}\textbf{]}}%
+}
+% \warn{} flags a design or correctness concern that needs resolving before the demo.
+\newcommand{\warn}[1]{%
+  \noindent\colorbox{yellow!25}{\parbox{\dimexpr\linewidth-2\fboxsep}{%
+    \textcolor{warncolor}{\textbf{$\triangleright$ CAUTION:} \textit{#1}}%
+  }}%
+  \vspace{4pt}%
+}
+
+% ── Hyperref setup ──────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=codeblue,
+  urlcolor=codeblue,
+  citecolor=codeblue,
+  pdftitle={Expectation Maximisers},
+  pdfauthor={},
+}
+
+% ── Code listing style ──────────────────────────────────────
+\lstset{
+  backgroundcolor=\color{codegray},
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  rulecolor=\color{gray!40},
+  tabsize=2,
+  showstringspaces=false,
+}
+
+% ── Section title formatting ────────────────────────────────
+\titleformat{\section}{\large\bfseries\color{codeblue}}{{\thesection}}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries\color{codeblue}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{1em}{}
+
+% ============================================================
+\begin{document}
+
+% ── Title page ──────────────────────────────────────────────
+\begin{titlepage}
+  \centering
+  \vspace*{3cm}
+  {\Huge\bfseries\color{codeblue} Expectation Maximisers \par}
+  \vspace{0.6cm}
+  {\large\itshape Crowd Preference Learning with EM-Weighted Preference Optimisation \par}
+  \vspace{1.5cm}
+  \rule{\linewidth}{0.4pt}\\[0.4cm]
+  % {\large Course Project Report \par}
+  \vspace{0.4cm}
+  \todo{Author names} \par
+  \vspace{0.2cm}
+  CS 6103 - Human Centred AI\par
+  \vspace{0.2cm}
+  {\large May 2026 \par}
+  \vspace{1cm}
+  \rule{\linewidth}{0.4pt}
+\end{titlepage}
+
+% ── Table of contents ───────────────────────────────────────
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Abstract}
+
+This project combines noisy crowd annotations on the Anthropic HH-RLHF dataset with
+Dawid--Skene-style Expectation Maximization (EM) and EM-weighted DPO-style preference
+optimisation. Annotators vote on which of two responses (A or B) is better; votes are
+simulated with heterogeneous worker reliability. EM infers per-prompt latent preferences
+and per-worker accuracy parameters. A policy language model (GPT-2) supplies LLM priors
+for the EM E-step; training uses a weighted objective where soft labels come from EM's
+posterior. The GPT-2 pipeline achieves approximately 75\% golden-dataset accuracy.
+
+\todo{Add 2--3 sentences on key findings / contributions once experiments are complete.}
+
+\newpage
+
+% ============================================================
+\section{Introduction}
+
+\subsection{Motivation}
+
+Human feedback is central to aligning language models with human preferences. In practice,
+annotator disagreement is the norm: workers vary widely in expertise, attention, and
+subjective judgement. Treating all votes equally discards valuable signal about annotator
+reliability.
+
+\todo{Expand with literature context: RLHF, Bradley--Terry models, disagreement in annotation.}
+
+\subsection{Problem Statement}
+
+Given a set of pairwise preference votes from heterogeneous annotators on prompt--response
+pairs, we aim to (1) infer the latent ground-truth preference per prompt and (2) train a
+language model policy using these inferred preferences as soft labels.
+
+\subsection{Contributions}
+
+\begin{itemize}[noitemsep]
+  \item A simulation framework over Anthropic HH-RLHF with four annotator types
+        (expert, average, spammer, adversary) and a bipartite assignment graph.
+  \item A staged experimental pipeline: plain DPO baseline $\to$ offline EM + DPO
+        $\to$ offline EM + projected DPO + SFT, isolating the contribution of each component.
+  \item An EM quality metric ($\mathcal{L}_\text{EM}$) combining label MSE and worker
+        parameter MSE, used to track EM convergence visually across phases.
+  \item Stress-testing EM under increasing task scale, adversarial annotator ratios, and
+        vote sparsity, with individual and combined factor analyses.
+  \item A robustness evaluation showing that EM + best DPO outperforms best DPO alone
+        even on the worst-case annotator regime.
+  \item (If time) Hierarchical EM with annotator expertise levels, followed by projected
+        DPO + SFT for peak accuracy.
+\end{itemize}
+
+\todo{Revise after finalising experiments.}
+
+\newpage
+
+% ============================================================
+\section{Background \& Related Work}
+
+\subsection{Reinforcement Learning from Human Feedback (RLHF)}
+
+\todo{Summarise the RLHF pipeline: SFT $\to$ reward model $\to$ PPO.
+Cite Christiano et al.~(2017), Stiennon et al.~(2020), InstructGPT.}
+
+\subsection{Direct Preference Optimisation (DPO)}
+
+\todo{Describe the DPO objective (Rafailov et al.~2023): avoids an explicit reward model
+by reparameterising as policy log-ratios.}
+
+\subsection{The Dawid--Skene Model}
+
+The Dawid--Skene model \cite{dawid1979} is an EM algorithm for inferring latent
+ground-truth labels from noisy crowd annotations. Each annotator is characterised by a
+confusion matrix; in the binary case this reduces to per-worker sensitivity $\alpha_j$
+and specificity $\beta_j$.
+
+\todo{Add 1--2 sentences on recent extensions and applications to NLP annotation.}
+
+\subsection{Dataset: Anthropic HH-RLHF}
+
+Anthropic's Helpful and Harmless RLHF dataset \cite{bai2022} contains human-written
+preference pairs (chosen / rejected responses). This project uses the first 1,000 rows
+of the training split as the prompt pool.
+
+\newpage
+
+% ============================================================
+\section{Method}
+
+\subsection{Simulation}
+
+A bipartite graph assigns 1,000 prompts to 50 annotators (3 workers per prompt,
+60 prompts per worker). Table~\ref{tab:workers} describes the four worker types.
+
+\begin{table}[H]
+  \centering
+  \caption{Simulated annotator types and their properties.}
+  \label{tab:workers}
+  \begin{tabular}{llll}
+    \toprule
+    \textbf{Type} & \textbf{Count} & \textbf{True Accuracy} & \textbf{Behaviour} \\
+    \midrule
+    Expert    & 10 & High    & Reliably votes with ground truth \\
+    Average   & 25 & Medium  & Moderately reliable \\
+    Spammer   & 10 & $\approx$0.5 & Near-random votes \\
+    Adversary &  5 & Low     & Systematically votes against truth \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+For each prompt, \texttt{truth\_is\_A} is drawn uniformly at random. Response A is the
+HH-RLHF \textit{chosen} response when \texttt{truth\_is\_A}$=1$, else \textit{rejected}.
+Each vote is sampled as:
+\[
+  v_{ij} = \begin{cases} \text{truth}_i & \text{with prob. } \theta_j \\ 1-\text{truth}_i & \text{otherwise} \end{cases}
+\]
+
+\subsection{Expectation Maximisation (Dawid--Skene)}
+
+\subsubsection{Latent Variables}
+
+Let $\gamma_i = P(\text{prompt } i \text{'s true label is ``A is better''})$, with
+per-annotator parameters $\alpha_j = P(\text{vote A} \mid \text{truth A})$ and
+$\beta_j = P(\text{vote B} \mid \text{truth B})$. The global prior is
+$\pi_1 = \frac{1}{N}\sum_i \gamma_i$.
+
+\subsubsection{E-Step}
+
+The posterior over the latent label for prompt $i$ is accumulated in log-space over
+all votes from assigned workers:
+
+\[
+  \log \gamma_i \propto \log \pi_1
+    + \sum_{j \in \mathcal{A}(i)} \bigl[v_{ij}\log\alpha_j + (1-v_{ij})\log(1-\beta_j)\bigr]
+\]
+
+When LLM priors $p_i^\text{LLM}$ are available (see \S\ref{sec:joint}), the term
+$\log\pi_1$ is replaced by $\log p_i^\text{LLM}$.
+
+\todo{Add the symmetric expression for $\log(1-\gamma_i)$ and normalisation step.}
+
+\subsubsection{M-Step}
+
+Given the updated $\gamma_i$, expected counts are accumulated via \texttt{scatter\_add}
+and used to update $\pi_1$, $\alpha_j$, $\beta_j$:
+
+\[
+  \alpha_j = \frac{\sum_{i: j\in\mathcal{A}(i)} \gamma_i \cdot \mathbf{1}[v_{ij}=1]}
+                  {\sum_{i: j\in\mathcal{A}(i)} \gamma_i}, \qquad
+  \beta_j  = \frac{\sum_{i: j\in\mathcal{A}(i)} (1-\gamma_i) \cdot \mathbf{1}[v_{ij}=0]}
+                  {\sum_{i: j\in\mathcal{A}(i)} (1-\gamma_i)}
+\]
+
+$\alpha_j$ and $\beta_j$ are clamped away from 0 and 1 for numerical stability.
+
+\subsection{Weighted DPO-Style Loss}
+
+The implicit reward for a sequence $y$ under policy $\pi_\theta$ and reference $\pi_\text{ref}$ is:
+\[
+  r(x, y) = \beta \left(\log\frac{\pi_\theta(y\mid x)}{\pi_\text{ref}(y\mid x)}\right)
+\]
+
+The weighted loss for prompt $i$ with soft label $\gamma_i$ is:
+\[
+  \mathcal{L}_i = -\,\gamma_i \log\sigma\!\bigl(r(x_i, y_i^A) - r(x_i, y_i^B)\bigr)
+                 -(1-\gamma_i)\log\sigma\!\bigl(r(x_i, y_i^B) - r(x_i, y_i^A)\bigr)
+\]
+
+where $y_i^A$ and $y_i^B$ are the two candidate responses.
+
+\subsection{Joint Training Loop}
+\label{sec:joint}
+
+Each training epoch alternates three phases:
+
+\begin{enumerate}[noitemsep]
+  \item \textbf{LLM Priors.} Compute per-prompt
+        $p_i^\text{LLM} = \sigma\!\bigl(\beta(r(x_i,y_i^A)-r(x_i,y_i^B))\bigr)$
+        under the current policy and frozen reference.
+  \item \textbf{EM Update.} Run one E-step (with $p_i^\text{LLM}$ as prior) and one
+        M-step to update $\gamma_i$, $\alpha_j$, $\beta_j$.
+  \item \textbf{Policy Update.} Compute $\mathcal{L}_i$ using the updated $\gamma_i$;
+        backpropagate and step AdamW.
+\end{enumerate}
+
+\subsection{Projected DPO}
+\label{sec:proj-dpo}
+
+\warn{``Projected DPO'' is not a standard term in the literature. You must define precisely
+what projection means before implementing. Three common interpretations are: (a)
+\textbf{gradient projection} --- project policy gradients onto a feasible set (e.g.\
+enforce a KL constraint via a Lagrange multiplier); (b) \textbf{policy projection} ---
+after each gradient step, project $\pi_\theta$ back into a ball around $\pi_\text{ref}$;
+(c) \textbf{subspace projection} --- restrict parameter updates to a low-rank subspace
+(similar to LoRA). Without a precise definition the method cannot be reproduced or compared.}
+
+\todo{Write a formal description of projected DPO once the variant is decided. Add the
+modified loss or update rule here.}
+
+\subsection{Hierarchical EM (Optional Extension)}
+\label{sec:hier-em}
+
+In the base Dawid--Skene model all annotators are treated as independent. A hierarchical
+extension pools information across annotators of the same type by placing a shared Beta
+prior on $(\alpha_j, \beta_j)$ within each group $g$:
+\[
+  \alpha_j \mid g(j) \sim \mathrm{Beta}(a_g, b_g), \qquad
+  \beta_j  \mid g(j) \sim \mathrm{Beta}(c_g, d_g)
+\]
+The M-step must then update both the per-worker parameters and the group-level
+hyperparameters $(a_g, b_g, c_g, d_g)$.
+
+\warn{Hierarchical EM is significantly more complex to implement than the flat variant.
+The M-step no longer has a closed form for the Beta hyperparameters; moment matching or
+variational updates are typically used. Set a firm cut-off date: if not complete by that
+date, drop this and present Phase~5 as the final result.}
+
+\todo{Formalise the modified E- and M-steps, and add the expertise-level variable if used.}
+
+\newpage
+
+% ============================================================
+\section{Implementation}
+
+\subsection{Project Layout}
+
+\begin{table}[H]
+  \centering
+  \caption{Repository modules and their roles.}
+  \label{tab:layout}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Module} & \textbf{File} & \textbf{Role} \\
+    \midrule
+    Data     & \texttt{simulator.py}           & Bipartite vote simulation on HH-RLHF \\
+    Data     & \texttt{prepare\_tensors.py}     & GPT-2 tokenisation $\to$ \texttt{rlhf\_tokens.pt} \\
+    Data     & \texttt{dataset.py}              & Pre-tokenised PyTorch Dataset \\
+    Data     & \texttt{dataset\_wo\_sft.py}     & On-the-fly tokenised Dataset \\
+    Model    & \texttt{em.py}                   & \texttt{DawidSkeneEM} (E-step, M-step) \\
+    Model    & \texttt{dpo.py}                  & Sequence log-probs + weighted DPO loss \\
+    Model    & \texttt{sft\_model.py}           & GPT-2 policy/reference loader \\
+    Model    & \texttt{dummy\_llm.py}           & Small causal LM for ablations \\
+    Training & \texttt{train\_joint.py}         & Full GPT-2 joint pipeline \\
+    Training & \texttt{train\_joint\_wo\_sft.py}& Ablation: dummy LM \\
+    Training & \texttt{em\_only.py}             & EM baseline (no LLM priors) \\
+    Utils    & \texttt{device.py}               & CUDA / MPS / CPU selection \\
+    Utils    & \texttt{metrics.py}              & Golden accuracy, reward margin \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Key Hyperparameters}
+
+\begin{table}[H]
+  \centering
+  \caption{Hyperparameters for the main experimental runs.}
+  \label{tab:hparams}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} & \textbf{Notes} \\
+    \midrule
+    Tasks (prompts)       & 1,000   & First 1,000 rows of HH-RLHF train split \\
+    Annotators            & 50      & 3 per task, 60 tasks per worker \\
+    Batch size            & 3       & Aligned to 3 votes per prompt \\
+    LR (GPT-2 pipeline)   & 1e-5    & AdamW \\
+    LR (dummy LM)         & 5e-5    & \texttt{train\_joint\_wo\_sft.py} \\
+    Max token length      & 128     & GPT-2 tokeniser, pad = eos \\
+    EM epochs (standalone)& 15      & \texttt{em\_only.py} \\
+    Training epochs (dummy)& 30     & \texttt{train\_joint\_wo\_sft.py} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Setup}
+
+\begin{lstlisting}[language=bash, caption={Environment setup}]
+python -m venv .venv
+source .venv/bin/activate        # macOS / Linux
+pip install -r requirements.txt  # torch, transformers, datasets, pandas, numpy, tqdm
+\end{lstlisting}
+
+Device selection is automatic: CUDA $>$ Apple MPS $>$ CPU (\texttt{src/utils/device.py}).
+
+\todo{Add the specific random seed(s) and hardware spec used for the 75\% result.}
+
+\newpage
+
+% ============================================================
+\section{Experimental Design \& Results}
+
+The evaluation follows a staged pipeline in which each phase fixes the best configuration
+found so far and adds one new component. This allows clean ablation of EM quality, DPO
+variant, and SFT, alongside a robustness stress test.
+
+\subsection{Metrics}
+
+\paragraph{Golden dataset accuracy.}
+The fraction of prompts where the predicted preference matches the simulator's hidden
+\texttt{truth\_is\_A} label. Two variants are tracked:
+\begin{itemize}[noitemsep]
+  \item \textit{EM accuracy:} $\hat{y}_i = \mathbf{1}[\gamma_i > 0.5]$ vs.\ \texttt{truth\_is\_A}.
+  \item \textit{DPO accuracy:} $\hat{y}_i = \mathbf{1}[r(x_i,y_i^A) > r(x_i,y_i^B)]$ vs.\ \texttt{truth\_is\_A}.
+\end{itemize}
+
+\paragraph{EM quality loss.}
+A scalar summarising how close the inferred parameters are to ground truth:
+\[
+  \mathcal{L}_\text{EM} =
+    \underbrace{\frac{1}{N}\sum_i \bigl(\gamma_i - \texttt{truth\_is\_A}_i\bigr)^2}_{\text{label MSE}}
+  + \underbrace{\frac{1}{J}\sum_j \left(\frac{\alpha_j+\beta_j}{2} - \theta_j^\text{true}\right)^2}_{\text{worker MSE}}
+\]
+Used for all EM convergence plots (not a training signal --- requires simulator ground truth).
+
+\warn{$\mathcal{L}_\text{EM}$ is an \emph{evaluation} metric only. Never use it as a loss
+during training; that would leak the hidden ground truth into the model.}
+
+\subsection{Data Setup}
+
+The first 1,000 rows of the Anthropic HH-RLHF training split are used throughout.
+\begin{itemize}[noitemsep]
+  \item \textbf{Training set:} prompts used for vote simulation and policy training.
+  \item \textbf{Validation set:} a held-out slice (e.g.\ 20\%) for epoch-wise monitoring.
+  \item \textbf{Ground truth:} \texttt{truth\_is\_A} per prompt --- used only for metrics,
+        never for training.
+\end{itemize}
+
+\warn{Fix the train/val split and random seed \emph{before} running any experiment.
+Any change to the split afterwards invalidates cross-phase comparisons.}
+
+\todo{Specify exact split sizes and the random seed used.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 1 --- Baseline: Plain DPO (No EM, No SFT, No Projection)}
+
+\paragraph{Setup.}
+Aggregate annotator votes via majority vote to obtain hard labels $\hat{y}_i^\text{maj}$.
+Train a GPT-2 policy with standard DPO against a frozen pretrained GPT-2 reference
+($\pi_\text{ref}$ = base GPT-2, not fine-tuned on HH-RLHF).
+
+\paragraph{Plots.} DPO loss, DPO golden accuracy, and implicit reward margin
+$\mathbb{E}[r(x,y^A)-r(x,y^B)]$, all vs.\ epoch.
+
+\paragraph{Expected result.}
+A noisy but improving baseline. Majority vote is a weak aggregation strategy; final
+accuracy should plateau below all EM-assisted runs.
+
+\warn{``No SFT'' must be defined consistently: here it means $\pi_\text{ref}$ is the
+off-the-shelf pretrained GPT-2. Keep this reference fixed across all DPO phases; changing
+it mid-pipeline makes comparisons invalid.}
+
+\todo{Record the final baseline accuracy. All subsequent phases are reported relative to this.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 2 --- Offline EM + Baseline DPO}
+
+\paragraph{Setup.}
+Run Dawid--Skene EM on the vote CSV (no LLM priors, offline) to produce soft labels
+$\gamma_i$. Feed these into the same DPO objective as Phase~1 (same reference, no
+projection, no SFT).
+
+\paragraph{Plots.}
+\begin{itemize}[noitemsep]
+  \item $\mathcal{L}_\text{EM}$ vs.\ EM iteration (one curve, scalar per step).
+  \item Histogram snapshots of $\gamma_i$ at iterations 1, 5, 10, 15 --- not 1,000
+        individual curves. Mean$\pm$std per worker type is also useful.
+  \item $\alpha_j$ and $\beta_j$ vs.\ EM iteration, grouped by annotator type.
+  \item DPO golden accuracy vs.\ epoch, overlaid with the Phase~1 curve.
+\end{itemize}
+
+\paragraph{Expected result.}
+EM soft labels outperform majority vote; DPO accuracy improves vs.\ Phase~1.
+
+\warn{Plotting 1,000 individual $\gamma_i$ trajectories is unreadable. Use summary
+statistics (mean, quantiles, or histograms) to visualise the $\gamma$ distribution.}
+
+\todo{Fill in final DPO accuracy and $\mathcal{L}_\text{EM}$ at convergence.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 3 --- Offline EM + Projected DPO + SFT}
+
+\paragraph{Setup.}
+Freeze the EM CSV from Phase~2. Replace baseline DPO with projected DPO
+(see \S\ref{sec:proj-dpo}). The reference model is now a GPT-2 fine-tuned via SFT on
+HH-RLHF chosen responses.
+
+\paragraph{Plots.}
+DPO loss, golden accuracy, and reward margin vs.\ epoch, overlaid with Phases~1 and~2.
+
+\paragraph{Expected result.}
+Best accuracy so far. This \textbf{fixes the DPO configuration} used in Phases~5 and~6.
+
+\warn{Using offline (fixed) EM decouples the EM quality from DPO training --- the policy
+has no feedback into the E-step. This is clean for ablation but differs from the joint
+loop in \texttt{train\_joint.py}. Verify this is the intended design.}
+
+\todo{Fill in final accuracy. Confirm this is better than Phase~2 before proceeding.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 4 --- EM Stress Testing}
+\label{sec:stress}
+
+Fix the best DPO configuration from Phase~3. Vary simulation parameters to stress EM
+in isolation, and report $\mathcal{L}_\text{EM}$ at convergence. Run each factor
+independently first, then combine for a worst-case regime.
+
+\begin{table}[H]
+  \centering
+  \caption{Stress-test factors and their expected effect on EM quality.}
+  \label{tab:stress}
+  \begin{tabular}{p{3.2cm}p{3cm}p{6cm}}
+    \toprule
+    \textbf{Factor} & \textbf{Values} & \textbf{Expected effect} \\
+    \midrule
+    Scale (tasks $\uparrow$, annotators fixed)
+      & 1k, 2k, 5k tasks
+      & Each worker's vote count drops $\to$ weaker $\alpha_j/\beta_j$ estimates \\
+    Adversarial mix (spammer + adversary fraction)
+      & 30\%, 50\%, 70\%
+      & Noisier votes $\to$ slower convergence, higher $\mathcal{L}_\text{EM}$ \\
+    Vote sparsity (votes per task)
+      & 3 (baseline), 2, 1
+      & Fewer observations per prompt $\to$ less certain $\gamma_i$ \\
+    Combined worst case
+      & High adversary + high sparsity + fixed annotators
+      & Maximum stress; used in Phase~5 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Plots.}
+$\mathcal{L}_\text{EM}$ at convergence vs.\ each factor (bar or line chart). Individual
+$\alpha_j$/$\beta_j$ recovery curves per annotator type for a representative setting.
+
+\warn{\textbf{Scaling direction.} Increasing tasks and annotators proportionally at fixed
+sparsity gives EM \emph{more} data --- it should \emph{improve} EM, not deteriorate it.
+Deterioration arises when tasks scale but annotators are \emph{held fixed} (each worker's
+vote count per task falls), or when the absolute votes-per-task drops. The table above
+reflects the correct interpretation (annotators fixed, tasks scale up). Resolve this
+before running experiments.}
+
+\todo{Specify exact parameter values; record $\mathcal{L}_\text{EM}$ and DPO accuracy
+per setting. Identify the single worst-case configuration to carry into Phase~5.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 5 --- Robustness Evaluation}
+
+\paragraph{Setup.}
+Take the worst-case vote dataset identified in Phase~4. Evaluate two configurations:
+\begin{enumerate}[noitemsep]
+  \item \textbf{Best DPO only (no EM):} majority vote from the noisy dataset as hard
+        labels; same DPO + SFT config from Phase~3.
+  \item \textbf{EM + Best DPO:} run EM on the worst-case dataset (producing degraded
+        but non-trivial $\gamma_i$); same DPO config.
+\end{enumerate}
+
+\paragraph{Claim.}
+Even with degraded EM labels, configuration (2) should outperform (1), demonstrating
+robustness of the full pipeline to adversarial annotator conditions.
+
+\paragraph{Plots.}
+Accuracy curves for both configurations on the same axes, with Phase~1 baseline for reference.
+
+\warn{\textbf{Baseline sanity check.} If the worst-case dataset has, say, 70\% adversarial
+workers, majority vote will be \emph{systematically inverted} --- configuration (1) may
+fall \emph{below 50\%} accuracy. This makes EM look impressive but trivially so. Consider
+whether a stronger no-EM baseline (e.g.\ annotator-type-weighted majority, without full EM)
+would make the robustness claim more convincing.}
+
+\todo{Fill in final accuracy for both configurations.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 6 (Optional) --- Hierarchical EM + Projected DPO + SFT}
+
+If time permits, extend the annotator model to include an explicit expertise level
+(see \S\ref{sec:hier-em}). Combined with the best DPO + SFT variant, this should yield
+the highest golden accuracy across all phases.
+
+\paragraph{Plots.}
+Final accuracy from all phases on a single ``staircase'' improvement plot.
+
+\todo{Implement hierarchical EM and fill in results. If not completed, present Phase~5 as the conclusion.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Summary of Results}
+
+\begin{table}[H]
+  \centering
+  \caption{Golden-dataset accuracy across all pipeline phases.}
+  \label{tab:summary}
+  \begin{tabular}{clll}
+    \toprule
+    \textbf{Phase} & \textbf{Configuration} & \textbf{DPO Acc.} & \textbf{$\mathcal{L}_\text{EM}$} \\
+    \midrule
+    1 & Plain DPO --- majority vote, no EM, no SFT            & \todo{fill} & --- \\
+    2 & Offline EM + Baseline DPO                              & \todo{fill} & \todo{fill} \\
+    3 & Offline EM + Projected DPO + SFT                       & \todo{fill} & same as Ph.\ 2 \\
+    4 & EM stress test (worst single factor)                   & \todo{fill} & \todo{fill} \\
+    4 & EM stress test (combined worst case)                   & \todo{fill} & \todo{fill} \\
+    5 & Worst-case data + Best DPO, no EM                      & \todo{fill} & --- \\
+    5 & Worst-case data + EM + Best DPO                        & \todo{fill} & \todo{fill} \\
+    6 & Hierarchical EM + Projected DPO + SFT (optional)       & \todo{fill} & \todo{fill} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\newpage
+
+% ============================================================
+\section{Discussion}
+
+\subsection{Effect of LLM Priors on EM Convergence}
+
+\todo{Discuss whether and how the policy prior changes $\gamma$ convergence relative to
+the flat 50/50 prior. Does a stronger policy lead to faster / better convergence?}
+
+\subsection{Limitations}
+
+\begin{itemize}[noitemsep]
+  \item Simulated annotators may not capture real human disagreement patterns.
+  \item Only 1,000 prompts --- small scale relative to real RLHF pipelines.
+  \item The E-step in \texttt{em.py} adds the global $\pi_1$ term on top of the LLM prior
+        (and applies the static prior twice when no LLM prior is given), deviating from
+        textbook Dawid--Skene.
+\end{itemize}
+
+\todo{Add any further limitations identified during write-up.}
+
+\subsection{Open Design Questions}
+
+The following concerns should be resolved before or during the demo. They are flagged here
+so they do not get lost.
+
+\begin{enumerate}
+
+  \item \textbf{``Projected DPO'' is undefined.}
+        The term does not appear in the standard literature. A precise mathematical
+        definition must be written before implementation (see \S\ref{sec:proj-dpo}).
+        Without it, the Phase~3 improvement cannot be attributed to projection vs.\ SFT.
+
+  \item \textbf{Reference model consistency.}
+        Phase~1 uses pretrained GPT-2 as $\pi_\text{ref}$; Phase~3 uses an SFT-tuned GPT-2.
+        Changing the reference changes the implicit reward scale, making direct accuracy
+        comparisons across phases potentially confounded. Consider reporting reward margins
+        in addition to accuracy to make this visible.
+
+  \item \textbf{Scaling direction in Phase~4.}
+        Increasing tasks and annotators proportionally at fixed vote-sparsity should
+        \emph{improve} EM, not stress it. The intended stress regime is: tasks increase,
+        annotators fixed (so each worker covers more tasks with the same budget, reducing
+        per-worker signal density). Confirm the simulation code reflects this.
+
+  \item \textbf{Majority-vote baseline in Phase~5.}
+        A highly adversarial dataset (e.g.\ 70\% adversary workers) will produce
+        systematically inverted majority votes, driving baseline accuracy well below 50\%.
+        The EM result will look strong by comparison, but the contrast is trivial.
+        A more informative baseline would be a weighted combination using prior knowledge
+        of annotator type fractions (without full EM).
+
+  \item \textbf{The double-prior bug in \texttt{em.py}.}
+        The E-step currently applies the global $\pi_1$ prior \emph{in addition} to the
+        LLM prior, deviating from textbook Dawid--Skene. This inflates the effect of the
+        global prior and may artificially advantage phases that use LLM priors. Fix before
+        final experiments if possible.
+
+  \item \textbf{$\gamma_i$ visualisation scale.}
+        Plotting all 1,000 $\gamma_i$ trajectories over EM iterations is unreadable.
+        Use the scalar $\mathcal{L}_\text{EM}$, histogram snapshots, or per-type
+        mean $\pm$ std instead.
+
+\end{enumerate}
+
+\subsection{Future Work}
+
+\begin{itemize}[noitemsep]
+  \item Scale to the full HH-RLHF dataset.
+  \item Replace simulated annotators with real crowdworker disagreement data.
+  \item Experiment with a larger base model (e.g.\ GPT-2 medium/large or a modern open LLM).
+  \item Fix the double-prior issue in \texttt{em.py} and re-evaluate.
+\end{itemize}
+
+\todo{Add any future directions specific to your course goals.}
+
+\newpage
+
+% ============================================================
+\section{Conclusion}
+
+This project demonstrates a principled approach to learning from noisy crowd preferences.
+Dawid--Skene EM recovers per-prompt latent preferences and per-worker reliability, and
+LLM priors from the current policy enrich the E-step. The resulting soft labels drive a
+weighted DPO-style training objective that achieves $\approx$75\% golden-dataset accuracy
+with a GPT-2 policy.
+
+\todo{Revise once final numbers are in and key takeaways are clear.}
+
+\newpage
+
+% ============================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{dawid1979}
+A.~P. Dawid and A.~M. Skene.
+\newblock Maximum likelihood estimation of observer error-rates using the EM algorithm.
+\newblock \textit{Applied Statistics}, 28(1):20--28, 1979.
+
+\bibitem{rafailov2023}
+R.~Rafailov, A.~Sharma, E.~Mitchell, et al.
+\newblock Direct preference optimization: Your language model is secretly a reward model.
+\newblock \textit{NeurIPS}, 2023.
+
+\bibitem{bai2022}
+Y.~Bai et al.
+\newblock Training a helpful and harmless assistant with reinforcement learning from human feedback.
+\newblock \textit{arXiv:2204.05862}, 2022.
+
+\end{thebibliography}
+
+\todo{Add all remaining citations: InstructGPT, original RLHF papers, crowd annotation work.}
+
+\newpage
+
+% ============================================================
+\appendix
+\section{Running the Code}
+
+All data scripts must be run from \texttt{src/data/} and training scripts from
+\texttt{src/training/} so relative \texttt{../../data/} paths resolve correctly.
+
+\begin{table}[H]
+  \centering
+  \caption{Run commands and their outputs.}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Step} & \textbf{Command} & \textbf{Output} \\
+    \midrule
+    1. Simulate votes  & \texttt{cd src/data \&\& python simulator.py}            & \texttt{data/processed/*.csv} \\
+    2. Pre-tokenise    & \texttt{cd src/data \&\& python prepare\_tensors.py}      & \texttt{data/tokenized/*.pt} \\
+    3. Full training   & \texttt{cd src/training \&\& python train\_joint.py}      & Metrics to terminal \\
+    3. Ablation        & \texttt{cd src/training \&\& python train\_joint\_wo\_sft.py} & Metrics to terminal \\
+    EM only            & \texttt{cd src/training \&\& python em\_only.py}          & Accuracy + worker MAE \\
+    Loss smoke test    & \texttt{cd src/training \&\& python test\_dpo.py}         & Forward/backward check \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Known Implementation Note}
+
+In \texttt{src/models/em.py}, the E-step adds both the LLM prior term and the global
+$\pi_1$ term to each branch. When \texttt{llm\_priors} is \texttt{None}, the static 50/50
+prior is effectively applied twice in log-space. When LLM priors are provided, the global
+$\pi_1$ term is still added on top. This deviates from the textbook Dawid--Skene
+formulation and should be reviewed before publication.
+
+\end{document}
