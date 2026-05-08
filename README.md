@@ -71,16 +71,16 @@
 \begin{titlepage}
   \centering
   \vspace*{3cm}
-  {\Huge\bfseries\color{codeblue} Expectation Maximisers \par}
+  {\Huge\bfseries\color{codeblue} Crowd Preference Learning with EM-Weighted Preference Optimisation \par}
   \vspace{0.6cm}
-  {\large\itshape Crowd Preference Learning with EM-Weighted Preference Optimisation \par}
+  {\large\itshape CS 6103 - Human centred-AI \par}
   \vspace{1.5cm}
   \rule{\linewidth}{0.4pt}\\[0.4cm]
-  {\large Course Project Report \par}
+  {\large Expectation Maximisers \par}
   \vspace{0.4cm}
-  \todo{Author names} \par
+  % \todo{Author names} \par
   \vspace{0.2cm}
-  \todo{Institution / Course name} \par
+  % \todo{Institution / Course name} \par
   \vspace{0.2cm}
   {\large May 2026 \par}
   \vspace{1cm}
