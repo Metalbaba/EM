@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import os
 
-def simulate_crowd(n_annotators=500, l_workers_per_task=3, 
+def simulate_crowd(n_annotators=50, l_workers_per_task=3, 
                    adv_pct=0.1, spam_pct=0.2, exp_pct=0.2,
                    input_file="../../data/processed/01_train_raw.csv", 
                    output_dir="../../data/processed/"):
@@ -57,16 +57,11 @@ def simulate_crowd(n_annotators=500, l_workers_per_task=3,
             vote = 1 if (picked_true == truth_is_A) else 0
             noisy_data.append({"prompt_id": prompt_id, "annotator_id": worker_id, "vote": vote})
 
-    od = output_dir.replace("\\", "/")
-    if not od.endswith("/"):
-        od += "/"
-    os.makedirs(os.path.normpath(od.rstrip("/")), exist_ok=True)
-
-    votes_path = f"{od}02_train_noisy_votes.csv"
-    true_path = f"{od}03_true_params.csv"
-    pd.DataFrame(noisy_data).to_csv(votes_path, index=False)
-    pd.DataFrame([{"annotator_id": k, "true_acc": v} for k, v in true_theta.items()]).to_csv(true_path, index=False)
-    print(f"Saved votes -> {votes_path} | true worker params -> {true_path}")
+    pd.DataFrame(noisy_data).to_csv(f"{output_dir}02_train_noisy_votes.csv", index=False)
+    true_params_path = "../../data/true_params/03_true_params.csv"
+    os.makedirs(os.path.dirname(true_params_path), exist_ok=True)
+    pd.DataFrame([{"annotator_id": k, "true_acc": v} for k, v in true_theta.items()]).to_csv(true_params_path, index=False)
+    print(f"Saved 02_train_noisy_votes.csv and 03_true_params.csv to {output_dir}")
 
 if __name__ == "__main__":
     simulate_crowd()

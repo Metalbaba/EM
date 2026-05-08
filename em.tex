@@ -102,7 +102,12 @@ and per-worker accuracy parameters. A policy language model (GPT-2) supplies LLM
 for the EM E-step; training uses a weighted objective where soft labels come from EM's
 posterior. The GPT-2 pipeline achieves approximately 75\% golden-dataset accuracy.
 
-\todo{Add 2--3 sentences on key findings / contributions once experiments are complete.}
+Key contributions include an oracle upper bound for clean comparison, a EM quality
+metric ($\mathcal{L}_\text{EM}$) combining label and worker-parameter MSE, and a staged
+experimental framework that isolates the effect of each pipeline component. Stress-testing
+reveals the conditions under which EM degrades, and a robustness evaluation confirms the
+pipeline's advantage over majority-vote baselines even under adversarial annotator regimes.
+\todo{Replace with precise numbers and findings once experiments are complete.}
 
 \newpage
 
@@ -116,7 +121,15 @@ annotator disagreement is the norm: workers vary widely in expertise, attention,
 subjective judgement. Treating all votes equally discards valuable signal about annotator
 reliability.
 
-\todo{Expand with literature context: RLHF, Bradley--Terry models, disagreement in annotation.}
+Learning from human preferences has been formalised through the Bradley--Terry model
+\cite{bradley1952}, which assumes a latent quality score governs pairwise comparisons.
+Christiano et al.\ \cite{christiano2017} applied this framework to RLHF, training reward
+models from human comparisons to guide policy learning. In crowdsourcing settings,
+annotation quality varies substantially across workers: Ipeirotis et al.\ \cite{ipeirotis2010}
+showed that ignoring annotator reliability degrades label quality, while the Dawid--Skene
+model \cite{dawid1979} recovers latent true labels by jointly estimating worker confusion
+matrices. This project bridges the two lines of work, applying probabilistic crowd annotation
+modelling to the preference-learning problem in RLHF.
 
 \subsection{Problem Statement}
 
@@ -154,13 +167,36 @@ language model policy using these inferred preferences as soft labels.
 
 \subsection{Reinforcement Learning from Human Feedback (RLHF)}
 
-\todo{Summarise the RLHF pipeline: SFT $\to$ reward model $\to$ PPO.
-Cite Christiano et al.~(2017), Stiennon et al.~(2020), InstructGPT.}
+Reinforcement Learning from Human Feedback (RLHF) \cite{christiano2017} frames human
+preference data as a reward signal for training language models. The standard pipeline
+consists of three stages: (1)~\textbf{supervised fine-tuning (SFT)}, where the base model
+is fine-tuned on high-quality human demonstrations; (2)~\textbf{reward modelling}, where a
+scalar reward model is trained on human pairwise preferences using the Bradley--Terry model
+\cite{bradley1952}; and (3)~\textbf{policy optimisation}, where the SFT model is further
+optimised against the learned reward using PPO, subject to a
+KL-divergence penalty from the SFT policy to prevent reward hacking. Stiennon et al.\
+\cite{stiennon2020} demonstrated this pipeline for long-form summarisation, and Ouyang et
+al.\ \cite{ouyang2022} applied it at scale to produce InstructGPT, showing that RLHF-trained
+models are strongly preferred by human raters even over much larger base models.
 
 \subsection{Direct Preference Optimisation (DPO)}
 
-\todo{Describe the DPO objective (Rafailov et al.~2023): avoids an explicit reward model
-by reparameterising as policy log-ratios.}
+Direct Preference Optimisation (DPO) \cite{rafailov2023} eliminates the explicit reward
+model by showing that the optimal policy under the KL-constrained RLHF objective can be
+expressed in closed form as a function of the policy log-ratios. This yields a supervised
+loss directly on preference pairs:
+\[
+  \mathcal{L}_\text{DPO}(\pi_\theta;\pi_\text{ref}) =
+    -\mathbb{E}_{(x,\,y_w,\,y_l)}\!\left[
+      \log\sigma\!\left(
+        \beta\log\frac{\pi_\theta(y_w\mid x)}{\pi_\text{ref}(y_w\mid x)}
+       -\beta\log\frac{\pi_\theta(y_l\mid x)}{\pi_\text{ref}(y_l\mid x)}
+      \right)\right]
+\]
+where $y_w$ and $y_l$ are the preferred and rejected responses respectively,
+$\pi_\text{ref}$ is a frozen reference policy (typically the SFT model), and $\beta>0$
+controls the strength of the implicit KL penalty. DPO avoids the instability of RL-based
+fine-tuning while matching or exceeding RLHF performance in practice.
 
 \subsection{The Dawid--Skene Model}
 
@@ -169,13 +205,19 @@ ground-truth labels from noisy crowd annotations. Each annotator is characterise
 confusion matrix; in the binary case this reduces to per-worker sensitivity $\alpha_j$
 and specificity $\beta_j$.
 
-\todo{Add 1--2 sentences on recent extensions and applications to NLP annotation.}
+Paun et al.\ \cite{paun2018} extended Dawid--Skene to sequence labelling tasks in NLP,
+demonstrating its effectiveness over majority voting on named entity recognition benchmarks.
+Uma et al.\ \cite{uma2021} surveyed disagreement in NLP annotations more broadly, arguing
+that annotation disagreement often reflects genuine label ambiguity rather than annotator
+error, and that models trained on aggregated labels discard valuable distributional
+information.
 
 \subsection{Dataset: Anthropic HH-RLHF}
 
 Anthropic's Helpful and Harmless RLHF dataset \cite{bai2022} contains human-written
-preference pairs (chosen / rejected responses). This project uses the first 1,000 rows
-of the training split as the prompt pool.
+preference pairs (chosen / rejected responses). This project uses up to \textbf{10,000
+training rows} from the \texttt{train} split and up to \textbf{2,000 test rows} from the
+\texttt{test} split as the prompt pool.
 
 \newpage
 
@@ -221,7 +263,7 @@ Each vote is sampled as:
 To bound what is achievable under the same model and DPO objective without crowd noise,
 we define an \textbf{oracle baseline}: a DPO run where each training example uses
 \texttt{truth\_is\_A} directly as the label instead of any annotator vote. This requires
-no EM, no vote aggregation, and no simulation --- it trains on the hidden ground truth.
+no EM, no vote aggregation, and no simulation, it trains on the hidden ground truth.
 The oracle test accuracy establishes a ceiling that crowd-learning methods are measured
 against.
 
@@ -244,14 +286,25 @@ The posterior over the latent label for prompt $i$ is accumulated in log-space o
 all votes from assigned workers:
 
 \[
-  \log \gamma_i \propto \log \pi_1
+  \log \tilde{\gamma}_i = \log \pi_1
     + \sum_{j \in \mathcal{A}(i)} \bigl[v_{ij}\log\alpha_j + (1-v_{ij})\log(1-\beta_j)\bigr]
 \]
 
-When LLM priors $p_i^\text{LLM}$ are available (see \S\ref{sec:joint}), the term
-$\log\pi_1$ is replaced by $\log p_i^\text{LLM}$.
+The symmetric expression for the complementary label is:
 
-\todo{Add the symmetric expression for $\log(1-\gamma_i)$ and normalisation step.}
+\[
+  \log(1-\tilde{\gamma}_i) = \log(1-\pi_1)
+    + \sum_{j \in \mathcal{A}(i)} \bigl[v_{ij}\log(1-\alpha_j) + (1-v_{ij})\log\beta_j\bigr]
+\]
+
+Both unnormalised log-scores are computed simultaneously. Normalisation recovers the
+posterior probability via the softmax over two classes:
+\[
+  \gamma_i = \sigma\!\bigl(\log\tilde{\gamma}_i - \log(1-\tilde{\gamma}_i)\bigr)
+\]
+where $\sigma$ is the logistic function. When LLM priors $p_i^\text{LLM}$ are available
+(see \S\ref{sec:joint}), $\log\pi_1$ and $\log(1-\pi_1)$ are replaced by
+$\log p_i^\text{LLM}$ and $\log(1-p_i^\text{LLM})$ respectively.
 
 \subsubsection{M-Step}
 
@@ -301,7 +354,7 @@ Each training epoch alternates three phases:
 \label{sec:proj-dpo}
 
 Projected DPO is soft-label DPO in which EM's posterior $\gamma_i$ replaces the binary
-hard label. The loss for prompt $i$ is identical to the weighted DPO loss in \S4.3.
+hard label. The loss for prompt $i$ is identical to the weighted DPO loss in 4.3.
 The term \textit{projected} refers to the label space: rather than projecting a hard
 preference onto the loss, the EM posterior \emph{projects} the full annotation distribution
 into a single scalar trust weight.
@@ -344,12 +397,24 @@ prior on $(\alpha_j, \beta_j)$ within each group $g$:
 The M-step must then update both the per-worker parameters and the group-level
 hyperparameters $(a_g, b_g, c_g, d_g)$.
 
+The E-step is unchanged: $\gamma_i$ is still inferred from per-worker $\alpha_j$, $\beta_j$.
+The M-step updates each worker's parameters as before, then updates the group hyperparameters
+using moment matching:
+\[
+  a_g = \bar{\alpha}_g \cdot \kappa_g, \qquad
+  b_g = (1-\bar{\alpha}_g) \cdot \kappa_g
+\]
+where $\bar{\alpha}_g = \frac{1}{|g|}\sum_{j\in g}\alpha_j$ is the group mean and
+$\kappa_g > 0$ is a concentration parameter estimated from the empirical variance within
+the group. The $\beta$ hyperparameters follow analogously.
+
 \warn{Hierarchical EM is significantly more complex to implement than the flat variant.
 The M-step no longer has a closed form for the Beta hyperparameters; moment matching or
 variational updates are typically used. Set a firm cut-off date: if not complete by that
 date, drop this and present Phase~5 as the final result.}
 
-\todo{Formalise the modified E- and M-steps, and add the expertise-level variable if used.}
+\todo{Verify moment-matching M-step derivation against implementation, and add the
+expertise-level variable if a separate $\kappa_g$ per group is used.}
 
 \newpage
 
@@ -456,18 +521,19 @@ during training; that would leak the hidden ground truth into the model.}
 
 \subsection{Data Setup}
 
-The first 1,000 rows of the Anthropic HH-RLHF training split are used throughout.
+Up to 10,000 rows from the Anthropic HH-RLHF training split and 2,000 rows from the test
+split are used throughout.
 \begin{itemize}[noitemsep]
-  \item \textbf{Training set:} prompts used for vote simulation and policy training.
-  \item \textbf{Validation set:} a held-out slice (e.g.\ 20\%) for epoch-wise monitoring.
+  \item \textbf{Training set:} up to 10,000 prompts used for vote simulation and policy training.
+  \item \textbf{Test set:} up to 2,000 held-out prompts for epoch-wise accuracy evaluation.
   \item \textbf{Ground truth:} \texttt{truth\_is\_A} per prompt --- used only for metrics,
         never for training.
 \end{itemize}
 
-\warn{Fix the train/val split and random seed \emph{before} running any experiment.
+\warn{Fix the train/test split and random seed \emph{before} running any experiment.
 Any change to the split afterwards invalidates cross-phase comparisons.}
 
-\todo{Specify exact split sizes and the random seed used.}
+\todo{Specify exact row counts and the random seed(s) used.}
 
 % ─────────────────────────────────────────────────────────────
 \subsection{Phase 1 --- Baseline and Oracle DPO}
@@ -609,10 +675,10 @@ at convergence per setting. Identify the worst-case configuration for Phase~4 (r
 \subsection{Phase 4 --- Robustness Evaluation}
 
 \paragraph{Setup.}
-Take the worst-case vote dataset identified in Phase~4. Evaluate two configurations:
+Take the worst-case vote dataset identified in Phase~3. Evaluate two configurations:
 \begin{enumerate}[noitemsep]
   \item \textbf{Best DPO only (no EM):} majority vote from the noisy dataset as hard
-        labels; same DPO + SFT config from Phase~3.
+        labels; same DPO + SFT config from Phase~2.
   \item \textbf{EM + Best DPO:} run EM on the worst-case dataset (producing degraded
         but non-trivial $\gamma_i$); same DPO config.
 \end{enumerate}
@@ -684,17 +750,33 @@ Final accuracy from all phases on a single ``staircase'' improvement plot.
 
 \subsection{Effect of LLM Priors on EM Convergence}
 
-\todo{Discuss whether and how the policy prior changes $\gamma$ convergence relative to
-the flat 50/50 prior. Does a stronger policy lead to faster / better convergence?}
+When the policy $\pi_\theta$ is well-calibrated, $p_i^\text{LLM}$ provides a more
+informative prior than the flat $\pi_1$, steering the E-step toward the correct hemisphere
+of the posterior earlier in training. In early epochs, however, the policy prior may be
+noisy or biased, potentially reinforcing incorrect $\gamma_i$ values before the reward
+signal has stabilised. The joint loop therefore introduces a coupling: better $\gamma_i$
+improves the DPO loss, which improves $\pi_\theta$, which improves the prior for the next
+E-step. Whether this feedback is self-correcting or self-reinforcing depends on whether
+the initial policy bias aligns with or opposes the true label distribution.
+
+Comparing the joint and offline (frozen EM weights) accuracy curves directly tests this: if
+joint mode converges faster or to a higher accuracy, the LLM-prior feedback loop is
+net-positive; if offline matches or exceeds joint, the prior adds more noise than signal at
+this scale.
+
+\todo{Fill in the empirical comparison once results are available: does joint EM converge
+faster, reach higher accuracy, or degrade under strong initial policy bias?}
 
 \subsection{Limitations}
 
 \begin{itemize}[noitemsep]
   \item Simulated annotators may not capture real human disagreement patterns.
-  \item Only 1,000 prompts --- small scale relative to real RLHF pipelines.
+  \item Up to 10,000 training prompts --- small scale relative to real RLHF pipelines.
   \item The E-step in \texttt{em.py} adds the global $\pi_1$ term on top of the LLM prior
         (and applies the static prior twice when no LLM prior is given), deviating from
         textbook Dawid--Skene.
+  \item GPT-2 is not instruction-tuned; its SFT-free reference policy may not reflect the
+        reward gap that RLHF is designed to close in production settings.
 \end{itemize}
 
 \todo{Add any further limitations identified during write-up.}
@@ -706,24 +788,19 @@ so they do not get lost.
 
 \begin{enumerate}
 
-  \item \textbf{``Projected DPO'' is undefined.}
-        The term does not appear in the standard literature. A precise mathematical
-        definition must be written before implementation (see \S\ref{sec:proj-dpo}).
-        Without it, the Phase~3 improvement cannot be attributed to projection vs.\ SFT.
-
   \item \textbf{Reference model consistency.}
-        Phase~1 uses pretrained GPT-2 as $\pi_\text{ref}$; Phase~3 uses an SFT-tuned GPT-2.
-        Changing the reference changes the implicit reward scale, making direct accuracy
-        comparisons across phases potentially confounded. Consider reporting reward margins
-        in addition to accuracy to make this visible.
+        Phase~1 uses pretrained GPT-2 as $\pi_\text{ref}$; joint projected DPO uses an
+        iteratively updated policy. Changing the reference changes the implicit reward scale,
+        making direct accuracy comparisons across phases potentially confounded. Consider
+        reporting reward margins in addition to accuracy to make this visible.
 
-  \item \textbf{Scaling direction in Phase~4.}
+  \item \textbf{Scaling direction in Phase~3.}
         Increasing tasks and annotators proportionally at fixed vote-sparsity should
         \emph{improve} EM, not stress it. The intended stress regime is: tasks increase,
         annotators fixed (so each worker covers more tasks with the same budget, reducing
         per-worker signal density). Confirm the simulation code reflects this.
 
-  \item \textbf{Majority-vote baseline in Phase~5.}
+  \item \textbf{Majority-vote baseline in Phase~4.}
         A highly adversarial dataset (e.g.\ 70\% adversary workers) will produce
         systematically inverted majority votes, driving baseline accuracy well below 50\%.
         The EM result will look strong by comparison, but the contrast is trivial.
@@ -737,7 +814,7 @@ so they do not get lost.
         final experiments if possible.
 
   \item \textbf{$\gamma_i$ visualisation scale.}
-        Plotting all 1,000 $\gamma_i$ trajectories over EM iterations is unreadable.
+        Plotting all 10,000 $\gamma_i$ trajectories over EM iterations is unreadable.
         Use the scalar $\mathcal{L}_\text{EM}$, histogram snapshots, or per-type
         mean $\pm$ std instead.
 
@@ -749,10 +826,13 @@ so they do not get lost.
   \item Scale to the full HH-RLHF dataset.
   \item Replace simulated annotators with real crowdworker disagreement data.
   \item Experiment with a larger base model (e.g.\ GPT-2 medium/large or a modern open LLM).
-  \item Fix the double-prior issue in \texttt{em.py} and re-evaluate.
+  \item Fix the double-prior issue in \texttt{em.py} and re-evaluate whether joint EM
+        provides a consistent benefit.
+  \item Explore Bayesian extensions of DPO that incorporate uncertainty over the preference
+        label directly into the loss, rather than a point-estimate soft label $\gamma_i$.
 \end{itemize}
 
-\todo{Add any future directions specific to your course goals.}
+% \todo{Add any future directions specific to your course goals.}
 
 \newpage
 
@@ -773,24 +853,57 @@ with a GPT-2 policy.
 \bibliographystyle{plain}
 \begin{thebibliography}{9}
 
+\bibitem{bradley1952}
+R.~A. Bradley and M.~E. Terry.
+\newblock Rank analysis of incomplete block designs: I.\ The method of paired comparisons.
+\newblock \textit{Biometrika}, 39(3/4):324--345, 1952.
+
+\bibitem{christiano2017}
+P.~F. Christiano, J.~Leike, T.~Brown, et al.
+\newblock Deep reinforcement learning from human preferences.
+\newblock \textit{Advances in Neural Information Processing Systems}, 30, 2017.
+
 \bibitem{dawid1979}
 A.~P. Dawid and A.~M. Skene.
 \newblock Maximum likelihood estimation of observer error-rates using the EM algorithm.
 \newblock \textit{Applied Statistics}, 28(1):20--28, 1979.
 
+\bibitem{ipeirotis2010}
+P.~G. Ipeirotis, F.~Provost, and J.~Wang.
+\newblock Quality management on Amazon Mechanical Turk.
+\newblock In \textit{Proceedings of the HCOMP Workshop at KDD}, 2010.
+
+\bibitem{ouyang2022}
+L.~Ouyang, J.~Wu, X.~Jiang, et al.
+\newblock Training language models to follow instructions with human feedback.
+\newblock \textit{Advances in Neural Information Processing Systems}, 35:27730--27744, 2022.
+
+\bibitem{paun2018}
+S.~Paun, B.~Carpenter, J.~Chamberlain, et al.
+\newblock Comparing Bayesian models of annotation.
+\newblock \textit{Transactions of the Association for Computational Linguistics}, 6:571--585, 2018.
+
 \bibitem{rafailov2023}
 R.~Rafailov, A.~Sharma, E.~Mitchell, et al.
 \newblock Direct preference optimization: Your language model is secretly a reward model.
-\newblock \textit{NeurIPS}, 2023.
+\newblock \textit{Advances in Neural Information Processing Systems}, 2023.
+
+\bibitem{stiennon2020}
+N.~Stiennon, L.~Ouyang, J.~Wu, et al.
+\newblock Learning to summarize with human feedback.
+\newblock \textit{Advances in Neural Information Processing Systems}, 33:3008--3021, 2020.
 
 \bibitem{bai2022}
 Y.~Bai et al.
 \newblock Training a helpful and harmless assistant with reinforcement learning from human feedback.
 \newblock \textit{arXiv:2204.05862}, 2022.
 
-\end{thebibliography}
+\bibitem{uma2021}
+A.~Uma, T.~Fornaciari, D.~Hovy, et al.
+\newblock Learning from disagreement: A survey.
+\newblock \textit{Journal of Artificial Intelligence Research}, 72:1385--1470, 2021.
 
-\todo{Add all remaining citations: InstructGPT, original RLHF papers, crowd annotation work.}
+\end{thebibliography}
 
 \newpage
 

@@ -71,12 +71,8 @@ class DawidSkeneEM:
 def run_standalone_em(max_iterations=20, tolerance=1e-4):
     print("Loading data for EM Optimization...")
     df_votes = pd.read_csv("../../data/processed/02_train_noisy_votes.csv")
-    # Same-directory export from simulate_crowd (preferred); fall back to legacy path
-    _tp_proc = "../../data/processed/03_true_params.csv"
-    _tp_legacy = "../../data/true_params/03_true_params.csv"
-    df_true_params = pd.read_csv(
-        _tp_proc if os.path.isfile(_tp_proc) else _tp_legacy
-    )
+    df_true_params = pd.read_csv("../../data/true_params/03_true_params.csv")
+    # df_true_params = pd.read_csv("../../data/processed/03_true_params.csv")
     
     num_prompts = df_votes['prompt_id'].max() + 1
     num_annotators = df_votes['annotator_id'].max() + 1
