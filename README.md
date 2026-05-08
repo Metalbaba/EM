@@ -1,6 +1,21 @@
 # Running instructions
 
+Long-form write-up (methods, citations): **`em.tex`** (LaTeX). This file is the **runbook** for `src/`.
+
 Scripts use paths such as `../../data/` relative to the **current working directory**, not the script file. Run each command **from the directory shown** so outputs land under `data/`, `results/`, and `models/` at the repo root.
+
+| Step | Script (run from `cd` as below) |
+|------|----------------------------------|
+| Ground truth | `src/data/ground_truth.py` |
+| Simulate votes | `src/data/simulate_crowd.py` |
+| Tokenize noisy train + test | `src/data/tokenize_noisy.py` |
+| Tokenize oracle train | `src/data/tokenize_oracle.py` |
+| Baseline DPO | `src/training/train_baseline_dpo.py` |
+| Standalone EM | `src/models/em_standalone.py` |
+| Projected DPO | `src/training/train_projected_dpo.py` |
+| Stress sweep | `src/experiments/stress_tests.py` |
+| Plots | `src/notebooks/plot_stress_tests.py`, `src/notebooks/plot_training_metrics.py` |
+| EM animation | `src/notebooks/animate_clusters.py` |
 
 ## Setup
 
@@ -42,12 +57,11 @@ python simulate_crowd.py
 Outputs: `data/processed/02_train_noisy_votes.csv` and **`data/processed/03_true_params.csv`** (same folder as the votes file — used by EM / stress tests).
 
 **3a. Tokenize noisy train + test (for crowd / EM training)**  
-Implementation: **`tokenize_noisy.py`**. **`tokenize_data.py`** is a thin wrapper that calls the same entry point (so older docs/commands still work).
+Uses **`tokenize_noisy.py`** (reads `01_train_raw.csv`, `01_test_raw.csv`, and `02_train_noisy_votes.csv`).
 
 ```bash
 cd src/data
 python tokenize_noisy.py
-# or: python tokenize_data.py
 ```
 
 Outputs: `data/tokenized/noisy_train_tokens.pt`, `data/tokenized/test_tokens.pt`
@@ -160,12 +174,11 @@ Sweeps sparsity `L`, adversary fraction, and annotator count `N`; runs simulatio
 ```bash
 cd src/experiments
 python stress_tests.py
-# or: python stress_test.py   # thin wrapper around stress_tests
 ```
 
 Outputs: `results/stress_tests/phase3_sweep_matrix.csv`, plus `data/processed/edge_cases/...` and `results/edge_cases/*_tracking/` for detected failure modes.
 
-**Note:** the heatmap sweep writes votes and true params under **`data/processed/sweep_temp/`** (not the main `data/processed/` pair), so your **main** `02_train_noisy_votes.csv` / `03_true_params.csv` used for training are untouched during the sweep. Edge-case reruns write under `data/processed/edge_cases/<name>/`. Re-run steps **2** and **3a** only if you need to refresh the main processed files for other reasons.
+**Note:** the heatmap sweep writes votes and true params under **`data/processed/sweep_temp/`** only. **`train_projected_dpo.py`** and **`em_standalone.py`** always read **`data/processed/02_train_noisy_votes.csv`** (and truth from **`data/processed/03_true_params.csv`** next to the main votes). So stress-testing does **not** replace your training CSVs; after the sweep you can keep using the same main Phase 1–2 artifacts. Edge-case reruns write under **`data/processed/edge_cases/<name>/`** (votes + `03_true_params.csv` there for that run).
 
 **2. Heatmaps / line charts**
 
@@ -181,4 +194,4 @@ After the sweep generates `*_tracking/` folders, use `animate_clusters.py --path
 
 **Optional — compare training CSVs:** `src/notebooks/plot_training_metrics.py` (run from `src/notebooks`) globs `results/*_{gpt2|dummy}_metrics.csv` and saves comparison plots.
 
-**Optional — inference:** `src/deployment.py` loads `models/projected_gpt2_joint.pth`; run from **`src/`** (`cd src` then `python deployment.py`) so imports resolve.
+**Optional — inference:** `src/deployment.py` loads **`models/projected_gpt2_joint.pth`** (must exist — train joint GPT-2 first or edit the path). Run from **`src/`**: `cd src` then `python deployment.py` so `models` imports resolve.
