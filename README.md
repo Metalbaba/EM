@@ -195,3 +195,5 @@ After the sweep generates `*_tracking/` folders, use `animate_clusters.py --path
 **Optional — compare training CSVs:** `src/notebooks/plot_training_metrics.py` (run from `src/notebooks`) globs `results/*_{gpt2|dummy}_metrics.csv` and saves comparison plots.
 
 **Optional — inference:** `src/deployment.py` loads **`models/projected_gpt2_joint.pth`** (must exist — train joint GPT-2 first or edit the path). Run from **`src/`**: `cd src` then `python deployment.py` so `models` imports resolve.
+
+**LaTeX report (Overleaf):** [Expectation Maximisers — project PDF](https://www.overleaf.com/project/69fe29055d3b8ce1d842cef5) (edit/build alongside **`em.tex`** in this repo).
