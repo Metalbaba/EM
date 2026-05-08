@@ -97,7 +97,7 @@ Use CSV columns `epoch`, `train_loss`, `test_accuracy` to compare runs.
 Steps **1**, **2**, and **3a** (noisy tokenization) are required. Oracle tokenization is optional here.
 
 **4a. Standalone EM (offline weights)**  
-Runs EM on `02_train_noisy_votes.csv` and writes trust weights for **static** projected DPO.
+Runs a **binary crowd EM** (per-worker accuracy `alpha`, `em_standalone.py`) on `02_train_noisy_votes.csv` and writes trust weights for **static** projected DPO.
 
 ```bash
 cd src/models
@@ -123,22 +123,31 @@ Outputs (pattern):
 - Metrics: `results/projected_{gpt2|dummy}_{joint|static}_metrics.csv`  
 - Weights: `models/projected_{gpt2|dummy}_{joint|static}.pth`  
 - Joint EM only: `results/05_em_inferred_params_joint_{gpt2|dummy}.csv`, `results/04_em_weights_joint_{gpt2|dummy}.csv`  
-- Per-epoch EM traces (joint or static): `results/{joint|static}_tracking_{gpt2|dummy}/em_params_epoch_*.csv`
+- **`use_joint_em=True` only:** per-epoch worker-accuracy snapshots under `results/{joint|static}_tracking_{gpt2|dummy}/em_params_epoch_*.csv`. With **`use_joint_em=False`**, that directory is created but **no** per-epoch CSVs are written (static trust weights are fixed for the whole run).
 
 **5. Animate EM parameter evolution**  
-`ult_animate_clusters.py --mode standalone` expects `../../results/standalone_tracking/` (from `em_standalone.py`). For projected runs, pass the tracking directory explicitly, for example:
+
+Run from `src/notebooks`. Prefer **`--path`** to the tracking folder that matches the run you want (the built-in `--mode standalone` / `--mode joint` shortcuts use folder and “true worker accuracy” paths that **do not** always match this repo — e.g. projected DPO uses `joint_tracking_gpt2/` / `joint_tracking_dummy/`, not plain `joint_tracking/`).
+
+Ground-truth worker accuracies for the scatter plot must come from **`data/true_params/03_true_params.csv`** (written by **`simulate_crowd.py`**). Re-run simulation for the same annotator count as the tracking run before animating, or lengths may not match.
+
+Examples:
 
 ```bash
 cd src/notebooks
+python ult_animate_clusters.py --path ../../results/standalone_tracking/
 python ult_animate_clusters.py --path ../../results/joint_tracking_dummy/
-python ult_animate_clusters.py --path ../../results/static_tracking_gpt2/
+python ult_animate_clusters.py --path ../../results/joint_tracking_gpt2/
+python ult_animate_clusters.py --path ../../results/static_tracking_dummy/
 ```
 
-For stress-test edge cases:
+Stress-test edge cases:
 
 ```bash
 python ult_animate_clusters.py --path ../../results/edge_cases/isolated_sparsity_failure_tracking/
 ```
+
+If the script reports a missing ground-truth file for `--path` edge runs, **`ult_animate_clusters.py` still looks under `data/processed/edge_cases/...`** for `03_true_params.csv`, but **`simulate_crowd.py` only writes** `data/true_params/03_true_params.csv` — align those paths in code or copy the CSV next to the edge-case data folder after that run.
 
 ---
 
@@ -153,6 +162,8 @@ python stress_test.py
 ```
 
 Outputs: `results/stress_tests/phase3_sweep_matrix.csv`, plus `data/processed/edge_cases/...` and `results/edge_cases/*_tracking/` for detected failure modes.
+
+**Note:** the sweep repeatedly overwrites **`data/processed/02_train_noisy_votes.csv`** and **`data/true_params/03_true_params.csv`**. If you need a stable main dataset for Phases 1–2, re-run steps **2** and **3a** after stress testing, or archive those files before running `stress_test.py`.
 
 **2. Heatmaps / line charts**
 
