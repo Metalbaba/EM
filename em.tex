@@ -71,16 +71,16 @@
 \begin{titlepage}
   \centering
   \vspace*{3cm}
-  {\Huge\bfseries\color{codeblue} Expectation Maximisers \par}
+  {\Huge\bfseries\color{codeblue} Crowd Preference Learning with EM-Weighted Preference Optimisation \par}
   \vspace{0.6cm}
-  {\large\itshape Crowd Preference Learning with EM-Weighted Preference Optimisation \par}
+  {\large\itshape CS 6103 - Human centred-AI \par}
   \vspace{1.5cm}
   \rule{\linewidth}{0.4pt}\\[0.4cm]
-  % {\large Course Project Report \par}
+  {\large Expectation Maximisers \par}
   \vspace{0.4cm}
-  \todo{Author names} \par
+  % \todo{Author names} \par
   \vspace{0.2cm}
-  CS 6103 - Human Centred AI\par
+  % \todo{Institution / Course name} \par
   \vspace{0.2cm}
   {\large May 2026 \par}
   \vspace{1cm}
@@ -129,8 +129,12 @@ language model policy using these inferred preferences as soft labels.
 \begin{itemize}[noitemsep]
   \item A simulation framework over Anthropic HH-RLHF with four annotator types
         (expert, average, spammer, adversary) and a bipartite assignment graph.
-  \item A staged experimental pipeline: plain DPO baseline $\to$ offline EM + DPO
-        $\to$ offline EM + projected DPO + SFT, isolating the contribution of each component.
+  \item An \textbf{oracle upper bound}: DPO trained directly on the hidden ground-truth
+        labels, establishing the accuracy ceiling reachable under the same model and
+        objective without crowd noise.
+  \item A staged experimental pipeline: noisy baseline DPO $\to$ offline EM + projected
+        DPO $\to$ joint EM + projected DPO, isolating the contribution of each component
+        relative to both the noisy baseline and the oracle ceiling.
   \item An EM quality metric ($\mathcal{L}_\text{EM}$) combining label MSE and worker
         parameter MSE, used to track EM convergence visually across phases.
   \item Stress-testing EM under increasing task scale, adversarial annotator ratios, and
@@ -180,8 +184,14 @@ of the training split as the prompt pool.
 
 \subsection{Simulation}
 
-A bipartite graph assigns 1,000 prompts to 50 annotators (3 workers per prompt,
-60 prompts per worker). Table~\ref{tab:workers} describes the four worker types.
+The dataset is loaded from the Anthropic HH-RLHF Hugging Face repository with fixed
+random seeds. Two splits are retained: up to \textbf{10,000 training rows} from
+\texttt{split="train"} and up to \textbf{2,000 test rows} from \texttt{split="test"}.
+Each row receives a reproducible random \texttt{truth\_is\_A} draw.
+
+A bipartite graph assigns training prompts to $N$ annotators with sparsity $L$
+(votes per prompt). Table~\ref{tab:workers} describes the four worker types.
+Adversary fraction and $L$ are configurable in \texttt{simulate\_crowd.py}.
 
 \begin{table}[H]
   \centering
@@ -191,10 +201,10 @@ A bipartite graph assigns 1,000 prompts to 50 annotators (3 workers per prompt,
     \toprule
     \textbf{Type} & \textbf{Count} & \textbf{True Accuracy} & \textbf{Behaviour} \\
     \midrule
-    Expert    & 10 & High    & Reliably votes with ground truth \\
-    Average   & 25 & Medium  & Moderately reliable \\
-    Spammer   & 10 & $\approx$0.5 & Near-random votes \\
-    Adversary &  5 & Low     & Systematically votes against truth \\
+    Expert    & configurable & High         & Reliably votes with ground truth \\
+    Average   & configurable & Medium       & Moderately reliable \\
+    Spammer   & configurable & $\approx$0.5 & Near-random votes \\
+    Adversary & configurable & Low          & Systematically votes against truth \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -205,6 +215,19 @@ Each vote is sampled as:
 \[
   v_{ij} = \begin{cases} \text{truth}_i & \text{with prob. } \theta_j \\ 1-\text{truth}_i & \text{otherwise} \end{cases}
 \]
+
+\subsection{Oracle Upper Bound}
+
+To bound what is achievable under the same model and DPO objective without crowd noise,
+we define an \textbf{oracle baseline}: a DPO run where each training example uses
+\texttt{truth\_is\_A} directly as the label instead of any annotator vote. This requires
+no EM, no vote aggregation, and no simulation --- it trains on the hidden ground truth.
+The oracle test accuracy establishes a ceiling that crowd-learning methods are measured
+against.
+
+Concretely, \texttt{tokenize\_oracle.py} builds one training example per prompt using
+\texttt{truth\_is\_A} as the vote, producing \texttt{oracle\_train\_tokens.pt}.
+\texttt{train\_baseline\_dpo.py} then loads this file when \texttt{is\_oracle=True}.
 
 \subsection{Expectation Maximisation (Dawid--Skene)}
 
@@ -277,16 +300,36 @@ Each training epoch alternates three phases:
 \subsection{Projected DPO}
 \label{sec:proj-dpo}
 
-\warn{``Projected DPO'' is not a standard term in the literature. You must define precisely
-what projection means before implementing. Three common interpretations are: (a)
-\textbf{gradient projection} --- project policy gradients onto a feasible set (e.g.\
-enforce a KL constraint via a Lagrange multiplier); (b) \textbf{policy projection} ---
-after each gradient step, project $\pi_\theta$ back into a ball around $\pi_\text{ref}$;
-(c) \textbf{subspace projection} --- restrict parameter updates to a low-rank subspace
-(similar to LoRA). Without a precise definition the method cannot be reproduced or compared.}
+Projected DPO is soft-label DPO in which EM's posterior $\gamma_i$ replaces the binary
+hard label. The loss for prompt $i$ is identical to the weighted DPO loss in \S4.3.
+The term \textit{projected} refers to the label space: rather than projecting a hard
+preference onto the loss, the EM posterior \emph{projects} the full annotation distribution
+into a single scalar trust weight.
 
-\todo{Write a formal description of projected DPO once the variant is decided. Add the
-modified loss or update rule here.}
+Two flags in \texttt{train\_projected\_dpo.py} control the configuration:
+
+\begin{itemize}[noitemsep]
+  \item \texttt{use\_joint\_em}: \texttt{True} = joint mode --- each epoch recomputes
+        LLM priors from the current policy, runs one EM E-step and M-step to refresh
+        $\gamma_i$, then trains. No pre-computed weight file needed.
+        \texttt{False} = static/offline mode --- uses frozen trust weights from
+        \texttt{results/04\_em\_weights.csv} (run \texttt{em\_standalone.py} first).
+  \item \texttt{use\_sft}: \texttt{True} = GPT-2 policy; \texttt{False} = dummy LM.
+\end{itemize}
+
+Output files follow the pattern \texttt{\{gpt2|dummy\}\_\{joint|static\}}:
+
+\begin{itemize}[noitemsep]
+  \item Metrics: \texttt{results/projected\_\{gpt2|dummy\}\_\{joint|static\}\_metrics.csv}
+  \item Weights: \texttt{models/projected\_\{gpt2|dummy\}\_\{joint|static\}.pth}
+  \item Joint mode only: \texttt{results/05\_em\_inferred\_params\_joint\_\{gpt2|dummy\}.csv},\\
+        \texttt{results/04\_em\_weights\_joint\_\{gpt2|dummy\}.csv}
+  \item Per-epoch EM traces: \texttt{results/\{joint|static\}\_tracking\_\{gpt2|dummy\}/em\_params\_epoch\_*.csv}
+\end{itemize}
+
+\warn{Offline mode decouples EM quality from DPO training, which is cleaner for ablation
+but means the policy cannot improve the E-step. Joint mode introduces a feedback loop but
+makes it harder to isolate the contribution of EM vs.\ DPO. Run both and compare.}
 
 \subsection{Hierarchical EM (Optional Extension)}
 \label{sec:hier-em}
@@ -321,24 +364,25 @@ date, drop this and present Phase~5 as the final result.}
   \label{tab:layout}
   \begin{tabular}{lll}
     \toprule
-    \textbf{Module} & \textbf{File} & \textbf{Role} \\
+    \textbf{Location} & \textbf{File} & \textbf{Role} \\
     \midrule
-    Data     & \texttt{simulator.py}           & Bipartite vote simulation on HH-RLHF \\
-    Data     & \texttt{prepare\_tensors.py}     & GPT-2 tokenisation $\to$ \texttt{rlhf\_tokens.pt} \\
-    Data     & \texttt{dataset.py}              & Pre-tokenised PyTorch Dataset \\
-    Data     & \texttt{dataset\_wo\_sft.py}     & On-the-fly tokenised Dataset \\
-    Model    & \texttt{em.py}                   & \texttt{DawidSkeneEM} (E-step, M-step) \\
-    Model    & \texttt{dpo.py}                  & Sequence log-probs + weighted DPO loss \\
-    Model    & \texttt{sft\_model.py}           & GPT-2 policy/reference loader \\
-    Model    & \texttt{dummy\_llm.py}           & Small causal LM for ablations \\
-    Training & \texttt{train\_joint.py}         & Full GPT-2 joint pipeline \\
-    Training & \texttt{train\_joint\_wo\_sft.py}& Ablation: dummy LM \\
-    Training & \texttt{em\_only.py}             & EM baseline (no LLM priors) \\
-    Utils    & \texttt{device.py}               & CUDA / MPS / CPU selection \\
-    Utils    & \texttt{metrics.py}              & Golden accuracy, reward margin \\
+    \texttt{src/data}        & \texttt{ground\_truth.py}         & Load HH-RLHF, assign \texttt{truth\_is\_A}, write train/test CSVs \\
+    \texttt{src/data}        & \texttt{simulate\_crowd.py}       & Bipartite vote simulation (configurable $N$, $L$, adversary mix) \\
+    \texttt{src/data}        & \texttt{tokenize\_data.py}        & Tokenise noisy votes $\to$ \texttt{noisy\_train\_tokens.pt}, \texttt{test\_tokens.pt} \\
+    \texttt{src/data}        & \texttt{tokenize\_oracle.py}      & Tokenise ground truth $\to$ \texttt{oracle\_train\_tokens.pt} (ceiling) \\
+    \texttt{src/models}      & \texttt{em\_standalone.py}        & Offline Dawid--Skene EM; writes \texttt{04\_em\_weights.csv} \\
+    \texttt{src/training}    & \texttt{train\_baseline\_dpo.py}  & Per-vote baseline DPO (\texttt{use\_sft} flag for GPT-2 vs.\ dummy) \\
+    \texttt{src/training}    & \texttt{train\_projected\_dpo.py} & Soft-label DPO (\texttt{use\_joint\_em} flag for joint vs.\ offline) \\
+    \texttt{src/experiments} & \texttt{stress\_test.py}          & Sweep $L$, adversary fraction, $N$; detect EM failure modes \\
+    \texttt{src/notebooks}   & \texttt{ult\_animate\_clusters.py}& Animate EM parameter evolution (standalone, joint, or edge-case path) \\
+    \texttt{src/notebooks}   & \texttt{plot\_stress\_tests.py}   & Heatmap ($L$ vs.\ adversary) and line chart (accuracy vs.\ $N$) \\
     \bottomrule
   \end{tabular}
 \end{table}
+
+Artefacts are written to three root-level directories: \texttt{data/} (CSVs and tokenised
+tensors), \texttt{results/} (metrics CSVs, tracking folders, plots), and \texttt{models/}
+(saved \texttt{.pth} checkpoints).
 
 \subsection{Key Hyperparameters}
 
@@ -350,14 +394,15 @@ date, drop this and present Phase~5 as the final result.}
     \toprule
     \textbf{Parameter} & \textbf{Value} & \textbf{Notes} \\
     \midrule
-    Tasks (prompts)       & 1,000   & First 1,000 rows of HH-RLHF train split \\
-    Annotators            & 50      & 3 per task, 60 tasks per worker \\
-    Batch size            & 3       & Aligned to 3 votes per prompt \\
-    LR (GPT-2 pipeline)   & 1e-5    & AdamW \\
-    LR (dummy LM)         & 5e-5    & \texttt{train\_joint\_wo\_sft.py} \\
-    Max token length      & 128     & GPT-2 tokeniser, pad = eos \\
-    EM epochs (standalone)& 15      & \texttt{em\_only.py} \\
-    Training epochs (dummy)& 30     & \texttt{train\_joint\_wo\_sft.py} \\
+    Training prompts      & up to 10,000 & HH-RLHF \texttt{split="train"}, fixed seed \\
+    Test prompts          & up to 2,000  & HH-RLHF \texttt{split="test"}, fixed seed \\
+    Annotators $N$        & \todo{fill}  & Configurable in \texttt{simulate\_crowd.py} \\
+    Vote sparsity $L$     & \todo{fill}  & Votes per prompt; swept in Phase~3 \\
+    Adversary fraction    & \todo{fill}  & Fraction of spammer + adversary workers \\
+    Max token length      & 128          & GPT-2 tokeniser, pad = eos \\
+    LR (GPT-2)            & \todo{fill}  & AdamW; \texttt{train\_baseline\_dpo.py} / \texttt{train\_projected\_dpo.py} \\
+    LR (dummy LM)         & \todo{fill}  & \texttt{use\_sft=False} in \texttt{train\_baseline\_dpo.py} \\
+    Training epochs       & \todo{fill}  & Configurable per run \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -366,13 +411,17 @@ date, drop this and present Phase~5 as the final result.}
 
 \begin{lstlisting}[language=bash, caption={Environment setup}]
 python -m venv .venv
-source .venv/bin/activate        # macOS / Linux
+.venv\Scripts\activate           # Windows
+# source .venv/bin/activate      # macOS / Linux
 pip install -r requirements.txt  # torch, transformers, datasets, pandas, numpy, tqdm
+pip install matplotlib seaborn   # required for plots and animations
 \end{lstlisting}
 
-Device selection is automatic: CUDA $>$ Apple MPS $>$ CPU (\texttt{src/utils/device.py}).
+\texttt{ground\_truth.py} requires network access to download \texttt{Anthropic/hh-rlhf}
+via Hugging Face \texttt{datasets}. Device selection is automatic: CUDA $>$ Apple MPS $>$
+CPU.
 
-\todo{Add the specific random seed(s) and hardware spec used for the 75\% result.}
+\todo{Add the specific random seed(s) and hardware spec used for final results.}
 
 \newpage
 
@@ -421,119 +470,143 @@ Any change to the split afterwards invalidates cross-phase comparisons.}
 \todo{Specify exact split sizes and the random seed used.}
 
 % ─────────────────────────────────────────────────────────────
-\subsection{Phase 1 --- Baseline: Plain DPO (No EM, No SFT, No Projection)}
+\subsection{Phase 1 --- Baseline and Oracle DPO}
 
 \paragraph{Setup.}
-Aggregate annotator votes via majority vote to obtain hard labels $\hat{y}_i^\text{maj}$.
-Train a GPT-2 policy with standard DPO against a frozen pretrained GPT-2 reference
-($\pi_\text{ref}$ = base GPT-2, not fine-tuned on HH-RLHF).
+\texttt{train\_baseline\_dpo.py} supports four configurations via two flags:
 
-\paragraph{Plots.} DPO loss, DPO golden accuracy, and implicit reward margin
-$\mathbb{E}[r(x,y^A)-r(x,y^B)]$, all vs.\ epoch.
-
-\paragraph{Expected result.}
-A noisy but improving baseline. Majority vote is a weak aggregation strategy; final
-accuracy should plateau below all EM-assisted runs.
-
-\warn{``No SFT'' must be defined consistently: here it means $\pi_\text{ref}$ is the
-off-the-shelf pretrained GPT-2. Keep this reference fixed across all DPO phases; changing
-it mid-pipeline makes comparisons invalid.}
-
-\todo{Record the final baseline accuracy. All subsequent phases are reported relative to this.}
-
-% ─────────────────────────────────────────────────────────────
-\subsection{Phase 2 --- Offline EM + Baseline DPO}
-
-\paragraph{Setup.}
-Run Dawid--Skene EM on the vote CSV (no LLM priors, offline) to produce soft labels
-$\gamma_i$. Feed these into the same DPO objective as Phase~1 (same reference, no
-projection, no SFT).
-
-\paragraph{Plots.}
 \begin{itemize}[noitemsep]
-  \item $\mathcal{L}_\text{EM}$ vs.\ EM iteration (one curve, scalar per step).
-  \item Histogram snapshots of $\gamma_i$ at iterations 1, 5, 10, 15 --- not 1,000
-        individual curves. Mean$\pm$std per worker type is also useful.
-  \item $\alpha_j$ and $\beta_j$ vs.\ EM iteration, grouped by annotator type.
-  \item DPO golden accuracy vs.\ epoch, overlaid with the Phase~1 curve.
+  \item \texttt{use\_sft}: \texttt{True} = GPT-2 pretrained policy; \texttt{False} = small
+        dummy causal LM.
+  \item \texttt{is\_oracle}: \texttt{False} = loads \texttt{noisy\_train\_tokens.pt}
+        (crowd votes, one DPO term per vote row, A/B swapped when \texttt{vote==0});
+        \texttt{True} = loads \texttt{oracle\_train\_tokens.pt} (ground-truth
+        \texttt{truth\_is\_A} as the label, one term per prompt).
 \end{itemize}
 
-\paragraph{Expected result.}
-EM soft labels outperform majority vote; DPO accuracy improves vs.\ Phase~1.
-
-\warn{Plotting 1,000 individual $\gamma_i$ trajectories is unreadable. Use summary
-statistics (mean, quantiles, or histograms) to visualise the $\gamma$ distribution.}
-
-\todo{Fill in final DPO accuracy and $\mathcal{L}_\text{EM}$ at convergence.}
-
-% ─────────────────────────────────────────────────────────────
-\subsection{Phase 3 --- Offline EM + Projected DPO + SFT}
-
-\paragraph{Setup.}
-Freeze the EM CSV from Phase~2. Replace baseline DPO with projected DPO
-(see \S\ref{sec:proj-dpo}). The reference model is now a GPT-2 fine-tuned via SFT on
-HH-RLHF chosen responses.
-
-\paragraph{Plots.}
-DPO loss, golden accuracy, and reward margin vs.\ epoch, overlaid with Phases~1 and~2.
-
-\paragraph{Expected result.}
-Best accuracy so far. This \textbf{fixes the DPO configuration} used in Phases~5 and~6.
-
-\warn{Using offline (fixed) EM decouples the EM quality from DPO training --- the policy
-has no feedback into the E-step. This is clean for ablation but differs from the joint
-loop in \texttt{train\_joint.py}. Verify this is the intended design.}
-
-\todo{Fill in final accuracy. Confirm this is better than Phase~2 before proceeding.}
-
-% ─────────────────────────────────────────────────────────────
-\subsection{Phase 4 --- EM Stress Testing}
-\label{sec:stress}
-
-Fix the best DPO configuration from Phase~3. Vary simulation parameters to stress EM
-in isolation, and report $\mathcal{L}_\text{EM}$ at convergence. Run each factor
-independently first, then combine for a worst-case regime.
+Running all four combinations produces two reference points for every subsequent phase:
+a \textbf{noisy baseline} (what the model learns from crowd votes alone) and an
+\textbf{oracle ceiling} (what it could learn with perfect labels under the same objective).
 
 \begin{table}[H]
   \centering
-  \caption{Stress-test factors and their expected effect on EM quality.}
-  \label{tab:stress}
-  \begin{tabular}{p{3.2cm}p{3cm}p{6cm}}
+  \caption{Phase 1 output files.}
+  \begin{tabular}{llll}
     \toprule
-    \textbf{Factor} & \textbf{Values} & \textbf{Expected effect} \\
+    \textbf{\texttt{use\_sft}} & \textbf{\texttt{is\_oracle}} & \textbf{Metrics CSV} & \textbf{Checkpoint} \\
     \midrule
-    Scale (tasks $\uparrow$, annotators fixed)
-      & 1k, 2k, 5k tasks
-      & Each worker's vote count drops $\to$ weaker $\alpha_j/\beta_j$ estimates \\
-    Adversarial mix (spammer + adversary fraction)
-      & 30\%, 50\%, 70\%
-      & Noisier votes $\to$ slower convergence, higher $\mathcal{L}_\text{EM}$ \\
-    Vote sparsity (votes per task)
-      & 3 (baseline), 2, 1
-      & Fewer observations per prompt $\to$ less certain $\gamma_i$ \\
-    Combined worst case
-      & High adversary + high sparsity + fixed annotators
-      & Maximum stress; used in Phase~5 \\
+    False & False & \texttt{results/baseline\_dummy\_metrics.csv} & \texttt{models/baseline\_dummy.pth} \\
+    True  & False & \texttt{results/baseline\_gpt2\_metrics.csv}  & \texttt{models/baseline\_gpt2.pth}  \\
+    False & True  & \texttt{results/oracle\_dummy\_metrics.csv}   & \texttt{models/oracle\_dummy.pth}   \\
+    True  & True  & \texttt{results/oracle\_gpt2\_metrics.csv}    & \texttt{models/oracle\_gpt2.pth}    \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\paragraph{Plots.}
-$\mathcal{L}_\text{EM}$ at convergence vs.\ each factor (bar or line chart). Individual
-$\alpha_j$/$\beta_j$ recovery curves per annotator type for a representative setting.
+\paragraph{Plots.} \texttt{test\_accuracy} and \texttt{train\_loss} vs.\ epoch for all
+four variants on the same axes. The oracle curves set the ceiling; the noisy curves set
+the floor that EM-assisted methods must exceed.
 
-\warn{\textbf{Scaling direction.} Increasing tasks and annotators proportionally at fixed
-sparsity gives EM \emph{more} data --- it should \emph{improve} EM, not deteriorate it.
-Deterioration arises when tasks scale but annotators are \emph{held fixed} (each worker's
-vote count per task falls), or when the absolute votes-per-task drops. The table above
-reflects the correct interpretation (annotators fixed, tasks scale up). Resolve this
-before running experiments.}
+\paragraph{Expected result.}
+Oracle $>$ noisy baseline by a meaningful margin. The gap measures how much performance
+crowd noise costs under this objective and model capacity.
 
-\todo{Specify exact parameter values; record $\mathcal{L}_\text{EM}$ and DPO accuracy
-per setting. Identify the single worst-case configuration to carry into Phase~5.}
+\warn{``No SFT'' means $\pi_\text{ref}$ is the off-the-shelf pretrained GPT-2 (or random
+dummy init), not fine-tuned on HH-RLHF chosen responses. Keep this reference consistent
+across all phases; changing it mid-pipeline confounds accuracy comparisons.}
+
+\todo{Record test accuracy for all four variants. The oracle GPT-2 accuracy is the target
+ceiling for all subsequent phases to approach.}
 
 % ─────────────────────────────────────────────────────────────
-\subsection{Phase 5 --- Robustness Evaluation}
+\subsection{Phase 2 --- EM + Projected DPO}
+
+\paragraph{Setup.}
+Run \texttt{em\_standalone.py} on \texttt{02\_train\_noisy\_votes.csv} to produce
+soft labels $\gamma_i$ (\texttt{results/04\_em\_weights.csv}) and inferred worker
+parameters (\texttt{results/05\_em\_inferred\_params.csv}). Then run
+\texttt{train\_projected\_dpo.py} in either mode (see \S\ref{sec:proj-dpo}):
+\textbf{offline} (frozen EM weights) for a clean ablation, or \textbf{joint} (EM
+refreshed each epoch using LLM priors) for the full feedback loop.
+
+\paragraph{Plots.}
+\begin{itemize}[noitemsep]
+  \item $\mathcal{L}_\text{EM}$ vs.\ EM iteration from \texttt{results/em\_loss\_history.csv}.
+  \item EM parameter evolution animated via \texttt{ult\_animate\_clusters.py}. Use
+        \texttt{--mode standalone} for the offline EM run, or pass the tracking folder
+        directly for projected runs, e.g.\
+        \texttt{--path ../../results/joint\_tracking\_gpt2/} or
+        \texttt{--path ../../results/static\_tracking\_dummy/}.
+  \item Histogram snapshots of $\gamma_i$ at selected iterations --- not individual curves.
+        Mean$\pm$std per worker type is also informative.
+  \item \texttt{test\_accuracy} vs.\ epoch from \texttt{results/projected\_metrics.csv},
+        overlaid with the Phase~1 curve.
+\end{itemize}
+
+\paragraph{Expected result.}
+EM soft labels outperform the per-vote baseline; projected DPO accuracy improves vs.\ Phase~1.
+
+\warn{Plotting individual $\gamma_i$ trajectories for 10,000 prompts is unreadable.
+Use the scalar $\mathcal{L}_\text{EM}$, histogram snapshots, or the cluster animation.}
+
+\todo{Fill in final DPO accuracy and $\mathcal{L}_\text{EM}$ at convergence for both
+offline and joint modes.}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 3 --- EM Stress Testing}
+\label{sec:phase3-stress}
+
+\paragraph{Setup.}
+Run \texttt{stress\_test.py} from \texttt{src/experiments/}. The script sweeps three
+factors independently then combines them for a worst-case regime:
+
+\begin{table}[H]
+  \centering
+  \caption{Stress-test sweep parameters.}
+  \label{tab:stress}
+  \begin{tabular}{p{3.2cm}p{3cm}p{6cm}}
+    \toprule
+    \textbf{Factor} & \textbf{Values swept} & \textbf{Expected effect} \\
+    \midrule
+    Vote sparsity $L$ (votes per task)
+      & \todo{fill from script}
+      & Fewer observations per prompt $\to$ less certain $\gamma_i$ \\
+    Adversary fraction (spammer + adversary)
+      & \todo{fill from script}
+      & Noisier votes $\to$ slower convergence, higher $\mathcal{L}_\text{EM}$ \\
+    Annotator count $N$ (tasks fixed)
+      & \todo{fill from script}
+      & Fewer annotators $\to$ weaker $\alpha_j/\beta_j$ estimates per worker \\
+    Combined worst case
+      & Low $L$ + high adversary + low $N$
+      & Maximum stress; edge-case tracking folders generated \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Outputs.}
+\texttt{results/stress\_tests/phase3\_sweep\_matrix.csv} (full sweep results),
+\texttt{results/stress\_tests/heatmap\_L\_vs\_Adv.png} (sparsity vs.\ adversary fraction),
+\texttt{results/stress\_tests/linegraph\_scale\_N.png} (accuracy vs.\ annotator count),
+and per-failure-mode \texttt{results/edge\_cases/*\_tracking/} folders for animation.
+
+\paragraph{Plots.}
+Run \texttt{plot\_stress\_tests.py} for heatmaps and line charts. For edge-case
+animations: \texttt{ult\_animate\_clusters.py --path ../../results/edge\_cases/<folder>/}.
+
+\paragraph{Expected result.}
+$\mathcal{L}_\text{EM}$ increases monotonically as $L$ decreases, adversary fraction
+increases, or $N$ decreases. The combined worst case should show the largest degradation.
+
+\warn{\textbf{Scaling direction.} Increasing $N$ (annotators) while holding tasks fixed
+gives more signal per task, so EM should \emph{improve}. The stress comes from
+\emph{reducing} $N$ or $L$. Confirm \texttt{stress\_test.py} sweeps in the correct direction.}
+
+\todo{Fill in the actual sweep values from the script and record $\mathcal{L}_\text{EM}$
+at convergence per setting. Identify the worst-case configuration for Phase~4 (robustness).}
+
+% ─────────────────────────────────────────────────────────────
+\subsection{Phase 4 --- Robustness Evaluation}
 
 \paragraph{Setup.}
 Take the worst-case vote dataset identified in Phase~4. Evaluate two configurations:
@@ -580,16 +653,26 @@ Final accuracy from all phases on a single ``staircase'' improvement plot.
   \label{tab:summary}
   \begin{tabular}{clll}
     \toprule
-    \textbf{Phase} & \textbf{Configuration} & \textbf{DPO Acc.} & \textbf{$\mathcal{L}_\text{EM}$} \\
+    \textbf{Phase} & \textbf{Configuration} & \textbf{Test Acc.} & \textbf{$\mathcal{L}_\text{EM}$} \\
     \midrule
-    1 & Plain DPO --- majority vote, no EM, no SFT            & \todo{fill} & --- \\
-    2 & Offline EM + Baseline DPO                              & \todo{fill} & \todo{fill} \\
-    3 & Offline EM + Projected DPO + SFT                       & \todo{fill} & same as Ph.\ 2 \\
-    4 & EM stress test (worst single factor)                   & \todo{fill} & \todo{fill} \\
-    4 & EM stress test (combined worst case)                   & \todo{fill} & \todo{fill} \\
-    5 & Worst-case data + Best DPO, no EM                      & \todo{fill} & --- \\
-    5 & Worst-case data + EM + Best DPO                        & \todo{fill} & \todo{fill} \\
-    6 & Hierarchical EM + Projected DPO + SFT (optional)       & \todo{fill} & \todo{fill} \\
+    \multicolumn{4}{l}{\textit{Baselines \& ceiling}} \\
+    1 & Oracle DPO, GPT-2 (\textit{ceiling})                    & \todo{fill} & --- \\
+    1 & Oracle DPO, dummy LM (\textit{ceiling})                  & \todo{fill} & --- \\
+    1 & Noisy baseline DPO, GPT-2                               & \todo{fill} & --- \\
+    1 & Noisy baseline DPO, dummy LM                            & \todo{fill} & --- \\
+    \multicolumn{4}{l}{\textit{EM-assisted}} \\
+    2 & Offline EM + Projected DPO                              & \todo{fill} & \todo{fill} \\
+    2 & Joint EM + Projected DPO                                & \todo{fill} & \todo{fill} \\
+    \multicolumn{4}{l}{\textit{Stress tests}} \\
+    3 & Stress test --- worst $L$ (sparsity)                    & \todo{fill} & \todo{fill} \\
+    3 & Stress test --- worst adversary fraction                & \todo{fill} & \todo{fill} \\
+    3 & Stress test --- worst $N$ (annotator count)             & \todo{fill} & \todo{fill} \\
+    3 & Stress test --- combined worst case                     & \todo{fill} & \todo{fill} \\
+    \multicolumn{4}{l}{\textit{Robustness}} \\
+    4 & Worst-case data + Best DPO, no EM                       & \todo{fill} & --- \\
+    4 & Worst-case data + EM + Best DPO                         & \todo{fill} & \todo{fill} \\
+    \multicolumn{4}{l}{\textit{Optional extension}} \\
+    5 & Hierarchical EM + Projected DPO                         & \todo{fill} & \todo{fill} \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -715,25 +798,65 @@ Y.~Bai et al.
 \appendix
 \section{Running the Code}
 
-All data scripts must be run from \texttt{src/data/} and training scripts from
-\texttt{src/training/} so relative \texttt{../../data/} paths resolve correctly.
+All scripts use paths relative to \textbf{their own directory}. Run each command from the
+directory shown so outputs land under \texttt{data/}, \texttt{results/}, and \texttt{models/}
+at the repo root.
 
-\begin{table}[H]
-  \centering
-  \caption{Run commands and their outputs.}
-  \begin{tabular}{lll}
-    \toprule
-    \textbf{Step} & \textbf{Command} & \textbf{Output} \\
-    \midrule
-    1. Simulate votes  & \texttt{cd src/data \&\& python simulator.py}            & \texttt{data/processed/*.csv} \\
-    2. Pre-tokenise    & \texttt{cd src/data \&\& python prepare\_tensors.py}      & \texttt{data/tokenized/*.pt} \\
-    3. Full training   & \texttt{cd src/training \&\& python train\_joint.py}      & Metrics to terminal \\
-    3. Ablation        & \texttt{cd src/training \&\& python train\_joint\_wo\_sft.py} & Metrics to terminal \\
-    EM only            & \texttt{cd src/training \&\& python em\_only.py}          & Accuracy + worker MAE \\
-    Loss smoke test    & \texttt{cd src/training \&\& python test\_dpo.py}         & Forward/backward check \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\subsection*{Phase 1 --- Data, Baseline DPO, and Oracle}
+\begin{lstlisting}[language=bash]
+cd src/data && python ground_truth.py       # -> data/processed/01_train_raw.csv, 01_test_raw.csv
+cd src/data && python simulate_crowd.py     # -> data/processed/02_train_noisy_votes.csv
+                                            #    data/true_params/03_true_params.csv
+cd src/data && python tokenize_data.py      # -> data/tokenized/noisy_train_tokens.pt
+                                            #    data/tokenized/test_tokens.pt
+cd src/data && python tokenize_oracle.py    # -> data/tokenized/oracle_train_tokens.pt
+                                            #    (requires ground_truth.py only, no crowd votes)
+
+# Run all four combinations (edit use_sft and is_oracle flags in the script):
+cd src/training && python train_baseline_dpo.py  # noisy  + dummy  -> results/baseline_dummy_metrics.csv
+                                                 # noisy  + GPT-2  -> results/baseline_gpt2_metrics.csv
+                                                 # oracle + dummy  -> results/oracle_dummy_metrics.csv
+                                                 # oracle + GPT-2  -> results/oracle_gpt2_metrics.csv
+\end{lstlisting}
+
+\subsection*{Phase 2 --- EM and Projected DPO}
+\begin{lstlisting}[language=bash]
+# Offline EM (run once; provides frozen weights for static projected DPO)
+cd src/models && python em_standalone.py
+# -> results/standalone_tracking/em_params_iter_*.csv
+# -> results/04_em_weights.csv
+# -> results/05_em_inferred_params.csv
+# -> results/em_loss_history.csv
+
+# Projected DPO - edit use_joint_em and use_sft flags in the script
+cd src/training && python train_projected_dpo.py
+# Outputs follow pattern {gpt2|dummy}_{joint|static}:
+#   results/projected_{gpt2|dummy}_{joint|static}_metrics.csv
+#   models/projected_{gpt2|dummy}_{joint|static}.pth
+#   results/{joint|static}_tracking_{gpt2|dummy}/em_params_epoch_*.csv
+# Joint mode also writes:
+#   results/05_em_inferred_params_joint_{gpt2|dummy}.csv
+#   results/04_em_weights_joint_{gpt2|dummy}.csv
+
+# Animate EM parameter evolution
+cd src/notebooks
+python ult_animate_clusters.py --mode standalone          # standalone EM run
+python ult_animate_clusters.py --path ../../results/joint_tracking_gpt2/
+python ult_animate_clusters.py --path ../../results/static_tracking_dummy/
+# Edge cases (after Phase 3 sweep):
+python ult_animate_clusters.py --path ../../results/edge_cases/isolated_sparsity_failure_tracking/
+\end{lstlisting}
+
+\subsection*{Phase 3 --- Stress Testing}
+\begin{lstlisting}[language=bash]
+cd src/experiments && python stress_test.py   # -> results/stress_tests/phase3_sweep_matrix.csv
+                                              #    results/edge_cases/*_tracking/
+cd src/notebooks && python plot_stress_tests.py  # -> results/stress_tests/heatmap_L_vs_Adv.png
+                                                 #    results/stress_tests/linegraph_scale_N.png
+# Animate an edge case
+cd src/notebooks && python ult_animate_clusters.py \
+    --path ../../results/edge_cases/<folder>/
+\end{lstlisting}
 
 \section{Known Implementation Note}
 
