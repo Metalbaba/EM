@@ -1,1 +1,11 @@
-pip install torch transformers datasets pandas numpy tqdm
+# Core ML / data (install torch for your platform: CPU default from PyPI, or see https://pytorch.org for CUDA wheels)
+torch
+transformers
+datasets
+pandas
+numpy
+tqdm
+
+# Notebooks / stress-test plots
+matplotlib
+seaborn
